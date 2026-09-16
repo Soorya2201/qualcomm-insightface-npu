@@ -319,3 +319,31 @@ python scripts/preflight_insightface.py --config config.insightface.toml
 It also warns when the database filename does not name the embedder: CavaFace
 embeddings are **also** 512-d, so `AllowList`'s dimension guard cannot detect a
 stale database from a different model.
+
+## Watching live traffic in a terminal
+
+```powershell
+$env:NTFY_TOPIC="your-topic"
+python scripts\watch_verdicts.py
+```
+
+Prints every verdict as it flows through the relay, color-coded, e.g.:
+
+```
+[14:32:07] AUTHORIZED   1 detected: 1 authorized, 0 denied
+[14:32:11] UNAUTHORIZED 1 detected: 0 authorized, 1 denied
+[14:32:15] EMPTY        no people detected
+```
+
+This is a second, independent subscriber to the same public ntfy.sh topic
+`uno-q-listener/ntfy_poller.py` listens on -- it needs no access to the board
+at all and keeps working even if the board is off, since ntfy.sh broadcasts
+to every subscriber. It only watches; it never drives the lights.
+
+The printed decision is computed by importing `verdict()` from the
+`uno-q-board` submodule's `check_auth.py`, so what you see here is guaranteed
+to match the board's own decision, not a separate implementation that could
+drift from it. Requires the submodule (`git submodule update --init`).
+
+Verified against the live relay: sent authorized, unauthorized, and empty
+test messages and confirmed each printed correctly, color-coded, in real time.
