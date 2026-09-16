@@ -211,6 +211,46 @@ def build_http_notifier(url: str, token: str = "", **kwargs) -> BoardNotifier:
     return BoardNotifier(sender=HttpBoardSender(url, token), **kwargs)
 
 
+class NtfyBoardSender:
+    """Publish verdicts to a public ntfy.sh topic instead of reaching the board directly.
+
+    Sidesteps client isolation and NAT entirely: this laptop and the board each
+    make an OUTBOUND https connection to ntfy.sh and never try to reach each
+    other. This is the fallback for a venue network (hotel/motel/conference)
+    that blocks device-to-device traffic but allows internet access.
+
+    The topic name is the only access control ntfy.sh's free tier offers.
+    Anyone who knows it can read or write it, so use a long random topic, not
+    a guessable one, for anything beyond a demo.
+    """
+
+    def __init__(self, topic: str, base_url: str = "https://ntfy.sh", timeout: float = 5.0) -> None:
+        self.url = f"{base_url.rstrip('/')}/{topic}"
+        self.timeout = timeout
+
+    def __call__(self, payload: dict) -> str:
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        body = _json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            self.url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=self.timeout) as response:
+                response.read()
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"ntfy publish failed: {exc}") from exc
+        return f"published to {self.url}"
+
+
+def build_ntfy_notifier(topic: str, **kwargs) -> BoardNotifier:
+    """Notifier that relays through ntfy.sh instead of reaching the board directly."""
+    return BoardNotifier(sender=NtfyBoardSender(topic), **kwargs)
+
+
 def build_notifier(scripts_dir: str | None = None, **kwargs) -> BoardNotifier | None:
     """Wire up send_to_board.send, or return None if the board tooling is absent."""
     import sys

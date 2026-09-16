@@ -11,7 +11,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 import numpy as np
 
-from .board import build_http_notifier, build_notifier
+from .board import build_http_notifier, build_notifier, build_ntfy_notifier
 from .matching import AllowList
 from .pipeline import FrameProcessor
 from .runtime import QnnSession
@@ -258,7 +258,19 @@ def run_server(config, enrollment_only: bool) -> None:
     # a board wired to it could never show green or clear when people leave.
     notifier = None
     if processor is not None and config.board.enabled:
-        if config.board.transport == "http":
+        if config.board.transport == "ntfy":
+            # Both sides only ever make OUTBOUND https connections to ntfy.sh;
+            # neither reaches the other directly, so venue Wi-Fi that blocks
+            # device-to-device traffic (client isolation) does not matter.
+            if not config.board.ntfy_topic:
+                raise RuntimeError("board.transport is ntfy but board.ntfy_topic is empty")
+            notifier = build_ntfy_notifier(
+                config.board.ntfy_topic,
+                base_url=config.board.ntfy_base_url,
+                heartbeat_seconds=config.board.heartbeat_seconds,
+                min_interval_seconds=config.board.min_interval_seconds,
+            )
+        elif config.board.transport == "http":
             # The board runs verdict_server.py and drives its own lights.
             notifier = build_http_notifier(
                 config.board.url,

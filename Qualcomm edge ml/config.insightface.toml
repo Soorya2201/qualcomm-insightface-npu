@@ -80,6 +80,15 @@ url = "http://SCL-UNOQ05.local:8770"
 # Leave token empty here and export VERDICT_TOKEN instead; the env var wins,
 # which keeps the shared secret out of the repository.
 token = ""
+
+# transport = "ntfy": both sides make OUTBOUND https connections only, never
+# to each other, so a venue Wi-Fi that blocks device-to-device traffic
+# (client isolation -- common on hotel/motel guest networks) does not matter.
+# Needs real outbound internet on both devices; does not fix a captive portal.
+# Leave topic empty here and export NTFY_TOPIC instead -- anyone who knows the
+# topic can read/write it, so this is a demo-grade relay, not a private one.
+# ntfy_topic = "uno-q-4f44c8f99c523c1218421570"
+# ntfy_base_url = "https://ntfy.sh"
 scripts_dir = "../uno-q-board/scripts"
 heartbeat_seconds = 30.0
 min_interval_seconds = 0.5

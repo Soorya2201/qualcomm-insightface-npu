@@ -80,9 +80,11 @@ class ProcessingConfig:
 class BoardConfig:
     """Arduino Uno Q status light. Disabled by default; absent tooling is not an error."""
     enabled: bool = False
-    transport: str = "http"          # "http" = board listens itself; "ssh" = legacy push
+    transport: str = "http"          # "http" board listens; "ntfy" relay via internet; "ssh" legacy push
     url: str = "http://SCL-UNOQ05.local:8770"
     token: str = ""
+    ntfy_topic: str = ""             # long random string, not a guessable name
+    ntfy_base_url: str = "https://ntfy.sh"
     scripts_dir: Path | None = None
     heartbeat_seconds: float = 30.0
     min_interval_seconds: float = 0.5
@@ -137,8 +139,8 @@ def load_config(path: str | Path) -> AppConfig:
     web = raw.get("web", {})
     processing = raw.get("processing", {})
     board = raw.get("board", {})
-    if str(board.get("transport", "http")).lower() not in {"http", "ssh"}:
-        raise ValueError("board.transport must be http or ssh")
+    if str(board.get("transport", "http")).lower() not in {"http", "ntfy", "ssh"}:
+        raise ValueError("board.transport must be http, ntfy, or ssh")
     embedding_dimension = int(emb.get("embedding_dimension", 128))
     if embedding_dimension <= 0:
         raise ValueError("models.embedder.embedding_dimension must be positive")
@@ -193,6 +195,8 @@ def load_config(path: str | Path) -> AppConfig:
             url=str(board.get("url", "http://SCL-UNOQ05.local:8770")),
             # Prefer the environment so a shared secret stays out of the repo.
             token=str(os.environ.get("VERDICT_TOKEN", board.get("token", ""))),
+            ntfy_topic=str(os.environ.get("NTFY_TOPIC", board.get("ntfy_topic", ""))),
+            ntfy_base_url=str(board.get("ntfy_base_url", "https://ntfy.sh")),
             scripts_dir=(
                 _resolve(config_path.parent, str(board["scripts_dir"]))
                 if board.get("scripts_dir")

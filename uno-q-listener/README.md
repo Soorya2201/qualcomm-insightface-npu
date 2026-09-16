@@ -97,3 +97,52 @@ not concurrency-safe, so overlapping HTTP requests are serialized behind a lock.
 another machine must reach it. Anyone who can reach the port can drive the
 light, so do not leave `VERDICT_TOKEN` empty on a shared network. The server
 warns loudly at startup if it is unset.
+
+## ntfy relay (for venue Wi-Fi that blocks device-to-device traffic)
+
+`ntfy_poller.py` is the fallback for a network with **client isolation** --
+common on hotel/motel/conference guest Wi-Fi, where the router actively
+refuses to route traffic between two guest devices even though each device
+individually has internet access. `verdict_server.py` needs the laptop to
+reach the board directly, which client isolation blocks by design; this file
+routes through [ntfy.sh](https://ntfy.sh), a free public pub/sub relay, so
+neither side ever talks to the other directly:
+
+```
+Snapdragon --https POST--> ntfy.sh <--https GET (streaming)-- Uno Q --RPC--> MCU
+```
+
+Both connections are OUTBOUND. The board never accepts an inbound connection
+from anything, so NAT and client isolation are both irrelevant -- this side
+only ever reads a stream it opened itself.
+
+**This does not fix a captive portal.** The board still needs real outbound
+internet to reach ntfy.sh at all; a splash-page login that has not been
+completed blocks this exactly as it blocks anything else.
+
+**Verified against the live public service** (not a mock): a message sent
+from a real `NtfyBoardSender.__call__()` reached a real `ntfy_poller.py`
+subscribed to the same topic over the actual internet, and drove the correct
+`set_people` bitmask. Also verified: the stale watchdog runs on its own timer
+thread, independent of message arrival -- an earlier version checked staleness
+only inside the message loop, which can never detect that messages have
+*stopped* arriving, since that code only runs when one arrives.
+
+### Install
+
+```bash
+adb push ntfy_poller.py /home/arduino/rpc/
+adb shell "sed -i 's/verdict_server.py/ntfy_poller.py/' ~/.config/systemd/user/verdict-light.service"
+adb shell "echo 'Environment=NTFY_TOPIC=your-long-random-topic' >> ~/.config/systemd/user/verdict-light.service"
+adb shell 'systemctl --user daemon-reload && systemctl --user restart verdict-light'
+```
+
+Pick a long random topic, not a guessable one -- ntfy.sh's free tier has no
+access control beyond the topic name being hard to guess.
+
+### Send a test verdict from anywhere with internet
+
+```bash
+curl -d '{"people":[{"id":"alice","status":"authorized","box":[40,120,90,200]}]}' \
+  https://ntfy.sh/your-long-random-topic
+```
