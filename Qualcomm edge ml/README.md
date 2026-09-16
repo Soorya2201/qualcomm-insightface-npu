@@ -182,6 +182,17 @@ template count, and embedding dimension. Every five seconds, a performance log
 reports processed FPS plus average total, detector, and embedding latency for
 each camera. Use `--log-level DEBUG` to log every processed frame.
 
+When `[board]` is enabled, every send to the board logs at `INFO`, e.g.:
+
+    INFO Board updated: 2 people (1 authorized, 1 denied) [alice:authorized, unknown:unauthorized] -> published to https://ntfy.sh/your-topic
+
+This is deliberate: a working send is the one line that proves a verdict this
+device computed actually reached the board, so it must be visible at the
+default level, not only failures. An unreachable board logs once at `WARNING`
+when it first fails, then again at most once a minute while the outage
+continues, so a long outage stays visible rather than disappearing after the
+first line; `INFO Board reachable again` marks recovery.
+
 A dated summary of the models, pipeline, completed work, performance, and
 commands is maintained in [PROJECT_LOG.txt](PROJECT_LOG.txt). The remaining
 performance ideas are recorded in

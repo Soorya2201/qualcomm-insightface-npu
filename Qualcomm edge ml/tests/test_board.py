@@ -105,3 +105,70 @@ def test_dead_board_does_not_raise_into_the_pipeline():
         time.sleep(0.02)
     time.sleep(0.2)
     notifier.close()
+
+
+def test_successful_send_logs_at_info_not_debug(caplog):
+    """A working send must be visible at the app's normal log level.
+
+    Buried at DEBUG, the one line proving a verdict actually reached the
+    board would never appear during normal operation -- only failures would,
+    which makes a healthy system look silent rather than confirmed-working.
+    """
+    import logging
+
+    notifier = BoardNotifier(lambda p: "ok", heartbeat_seconds=999, min_interval_seconds=0.0)
+    with caplog.at_level(logging.INFO, logger="access_vision.board"):
+        notifier.update(_result([("alice", True, (0, 0, 10, 10))]))
+        time.sleep(0.15)
+    notifier.close()
+
+    info_records = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert any("Board updated" in r.message for r in info_records), (
+        "a successful send must log at INFO; found: " + repr([r.message for r in caplog.records])
+    )
+
+
+def test_long_outage_stays_visible_past_the_first_warning():
+    """The onset warning must not be the only sign of trouble for a long outage."""
+    from access_vision import board as board_module
+
+    logged = []
+
+    class _FakeLogger:
+        def warning(self, msg, *args):
+            logged.append(msg % args if args else msg)
+
+        def info(self, *a, **k):
+            pass
+
+    original_logger = board_module.LOGGER
+    board_module.LOGGER = _FakeLogger()
+    try:
+        notifier = BoardNotifier(
+            lambda p: (_ for _ in ()).throw(RuntimeError("down")),
+            heartbeat_seconds=999,
+            min_interval_seconds=0.0,
+        )
+        clock = {"t": 0.0}
+        original_monotonic = board_module.time.monotonic
+        board_module.time.monotonic = lambda: clock["t"]
+        try:
+            notifier.update(_result([("alice", True, (0, 0, 10, 10))]))
+            notifier._run_once_for_test = None  # no-op; loop thread drives this
+            time.sleep(0.05)  # let the worker take one pass with the fake clock at t=0
+
+            # Advance the fake clock past the 60s re-log threshold and nudge the
+            # worker with a fresh (but same-key) update so it takes another pass.
+            clock["t"] = 61.0
+            notifier.update(_result([("alice", True, (0, 0, 10, 10))]))
+            time.sleep(0.05)
+        finally:
+            board_module.time.monotonic = original_monotonic
+        notifier.close()
+    finally:
+        board_module.LOGGER = original_logger
+
+    onset = [m for m in logged if "FAILED" in m]
+    still_down = [m for m in logged if "still unreachable" in m]
+    assert onset, f"expected an onset warning; got {logged}"
+    assert still_down, f"a 60s+ outage must re-log, not go silent after the first warning; got {logged}"

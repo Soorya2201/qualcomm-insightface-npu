@@ -69,6 +69,17 @@ def state_key(payload: dict[str, Any]) -> tuple:
     return tuple((p["id"], p["status"]) for p in payload["people"])
 
 
+def _describe_payload(payload: dict[str, Any]) -> str:
+    """Human-readable summary of what is being sent, for the INFO-level log line."""
+    people = payload.get("people", [])
+    if not people:
+        return "no people (lights cleared)"
+    authorized = sum(1 for p in people if p.get("status") == "authorized")
+    denied = len(people) - authorized
+    ids = ", ".join(f"{p.get('id', '?')}:{p.get('status', '?')}" for p in people)
+    return f"{len(people)} people ({authorized} authorized, {denied} denied) [{ids}]"
+
+
 class BoardNotifier:
     """Non-blocking bridge from the pipeline to the status light."""
 
@@ -91,6 +102,7 @@ class BoardNotifier:
         self._last_key: tuple | None = None
         self._last_sent = 0.0
         self._failing = False
+        self._last_failure_logged = 0.0
 
         self._thread = threading.Thread(target=self._run, name="board-notifier", daemon=True)
         self._thread.start()
@@ -140,9 +152,19 @@ class BoardNotifier:
             try:
                 summary = self._sender(payload)
             except Exception as exc:  # noqa: BLE001 - a dead light must not stop recognition
+                now_monotonic = time.monotonic()
                 if not self._failing:
-                    LOGGER.warning("Board unreachable, continuing without it: %s", exc)
+                    LOGGER.warning(
+                        "Board send FAILED (%s): %s -- continuing without it",
+                        _describe_payload(payload), exc,
+                    )
                     self._failing = True
+                    self._last_failure_logged = now_monotonic
+                elif now_monotonic - self._last_failure_logged >= 60.0:
+                    # A send that has been failing for minutes must stay visible,
+                    # not vanish after the one log line at onset.
+                    LOGGER.warning("Board still unreachable (%s): %s", _describe_payload(payload), exc)
+                    self._last_failure_logged = now_monotonic
                 continue
 
             if self._failing:
@@ -150,7 +172,10 @@ class BoardNotifier:
                 self._failing = False
             self._last_key = key
             self._last_sent = time.monotonic()
-            LOGGER.debug("Board updated people=%d -> %s", len(payload["people"]), summary)
+            # INFO, not DEBUG: this is the one line that proves a verdict this
+            # device computed actually reached the board. At the default log
+            # level a working send must be visible, not just a broken one.
+            LOGGER.info("Board updated: %s -> %s", _describe_payload(payload), summary)
 
     def close(self, timeout: float = 2.0) -> None:
         self._stop.set()
