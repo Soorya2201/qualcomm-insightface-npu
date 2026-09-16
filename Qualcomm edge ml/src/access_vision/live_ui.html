@@ -252,9 +252,31 @@
       setConnection('MONITORING STOPPED');
       cameraTag.textContent = 'NO ACTIVE FEED';
     }
+    async function setRuntime(enabled) {
+      const endpoint = enabled ? '/api/runtime/start' : '/api/runtime/stop';
+      const response = await fetch(endpoint, {method: 'POST'});
+      const out = await response.json();
+      if (!response.ok || out.error) throw new Error(out.error || ('HTTP ' + response.status));
+      return out;
+    }
     startButton.onclick = async () => {
-      if (running) { stopCamera(); return; }
+      if (running) {
+        startButton.disabled = true;
+        try {
+          stopCamera();
+          await setRuntime(false);
+          setConnection('RUNTIME STOPPED // SERVER STANDBY');
+        } catch (error) {
+          setConnection('STOP ERROR // ' + error, true);
+        } finally {
+          startButton.disabled = false;
+        }
+        return;
+      }
+      startButton.disabled = true;
       try {
+        setConnection('STARTING RUNTIME // ' + cfg.detector.toUpperCase());
+        await setRuntime(true);
         const selected = cfg.cameras.find(item => item.id === camera.value);
         cameraTag.textContent = selected.id.toUpperCase() + ' // ' + selected.source.toUpperCase();
         if (selected.source === 'webcam') {
@@ -279,7 +301,10 @@
         tick();
       } catch (error) {
         stopCamera();
+        try { await setRuntime(false); } catch (_) {}
         setConnection('CAMERA ERROR // ' + error, true);
+      } finally {
+        startButton.disabled = false;
       }
     };
     function corner(c, x, y, dx, dy, color) {

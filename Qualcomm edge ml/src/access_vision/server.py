@@ -282,9 +282,21 @@ def _build_live_runtime(config) -> dict:
     notifier = _build_notifier(config, processor)
     LOGGER.info("Board output %s", "enabled" if notifier else "unavailable/disabled")
     return {
+        "running": True,
         "config": config,
         "processor": processor,
         "notifier": notifier,
+        "page": _live_html(config),
+        "cameras_by_id": {camera.id: camera for camera in config.cameras},
+    }
+
+
+def _stopped_live_runtime(config) -> dict:
+    return {
+        "running": False,
+        "config": config,
+        "processor": None,
+        "notifier": None,
         "page": _live_html(config),
         "cameras_by_id": {camera.id: camera for camera in config.cameras},
     }
@@ -329,6 +341,7 @@ def run_server(
         )
         enrollment = EnrollmentManager(config, detector, embedder)
         state = {
+            "running": False,
             "config": config,
             "processor": None,
             "notifier": None,
@@ -361,7 +374,13 @@ def run_server(
                     LOGGER.warning(
                         "Config hot reload ignores [web] changes; restart required for host/port/frame size"
                     )
-                new_state = _build_live_runtime(new_config)
+                with lock:
+                    should_run = bool(state.get("running"))
+                new_state = (
+                    _build_live_runtime(new_config)
+                    if should_run
+                    else _stopped_live_runtime(new_config)
+                )
             except Exception as exc:  # noqa: BLE001 - keep the known-good runtime alive
                 LOGGER.exception("Config hot reload failed; keeping previous runtime: %s", exc)
                 last_stamp = stamp
@@ -471,16 +490,51 @@ def run_server(
                 if length > MAX_FRAME_BYTES:
                     raise ValueError("Frame is too large")
                 body = self.rfile.read(length)
+                if parsed.path == "/api/runtime/start" and not enrollment_only:
+                    with lock:
+                        if state.get("running"):
+                            self._json({
+                                "status": "already_running",
+                                "detector": state["config"].detector.model_id,
+                            })
+                            return
+                        current_config = state["config"]
+                    new_state = _build_live_runtime(current_config)
+                    with lock:
+                        state.update(new_state)
+                    self._json({
+                        "status": "started",
+                        "detector": current_config.detector.model_id,
+                    })
+                    return
+                if parsed.path == "/api/runtime/stop" and not enrollment_only:
+                    with lock:
+                        old_notifier = state.get("notifier")
+                        current_config = state["config"]
+                        state.update(_stopped_live_runtime(current_config))
+                    if old_notifier is not None:
+                        old_notifier.close()
+                    LOGGER.info("Live runtime stopped by browser control")
+                    self._json({
+                        "status": "stopped",
+                        "detector": current_config.detector.model_id,
+                    })
+                    return
                 with lock:
                     processor = state["processor"]
                     notifier = state["notifier"]
-                    if parsed.path == "/api/frame" and processor is not None:
-                        frame = _decode_rgba(body, int(query["width"][0]), int(query["height"][0]))
-                        result = processor.process(query["camera"][0], frame)
-                        if notifier is not None:
-                            notifier.update(result)
-                        self._json(result)
-                    elif parsed.path == "/api/enroll/reset" and enrollment is not None:
+                if parsed.path == "/api/frame":
+                    if processor is None:
+                        self._json({"error": "runtime_stopped"}, 409)
+                        return
+                    frame = _decode_rgba(body, int(query["width"][0]), int(query["height"][0]))
+                    result = processor.process(query["camera"][0], frame)
+                    if notifier is not None:
+                        notifier.update(result)
+                    self._json(result)
+                    return
+                with lock:
+                    if parsed.path == "/api/enroll/reset" and enrollment is not None:
                         self._json(enrollment.reset())
                     elif parsed.path == "/api/enroll/frame" and enrollment is not None:
                         frame = _decode_rgba(body, int(query["width"][0]), int(query["height"][0]))
