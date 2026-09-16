@@ -1,0 +1,33 @@
+# Verdict listener via the ntfy.sh relay. Use this instead of
+# verdict-light.service when the venue Wi-Fi blocks device-to-device traffic
+# (client isolation) -- confirmed on real hardware against a hotel/motel
+# network whose router actively rejected direct pings between the laptop and
+# this board ("Destination net unreachable", not a timeout).
+#
+# Install (no root needed):
+#   loginctl enable-linger arduino        # see the note in README.md -- this
+#                                          # step is easy to skip and the
+#                                          # service fails silently without it
+#   mkdir -p ~/.config/systemd/user
+#   cp verdict-light-ntfy.service ~/.config/systemd/user/
+#   sed -i 's/CHANGE_ME/your-long-random-topic/' ~/.config/systemd/user/verdict-light-ntfy.service
+#   export XDG_RUNTIME_DIR=/run/user/$(id -u)
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now verdict-light-ntfy
+[Unit]
+Description=Uno Q verdict listener via ntfy.sh relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/arduino/rpc
+Environment=MSGPACK_PUREPYTHON=1
+Environment=VERDICT_STALE_SECONDS=25
+Environment=NTFY_TOPIC=CHANGE_ME
+ExecStart=/usr/bin/python3 /home/arduino/rpc/ntfy_poller.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

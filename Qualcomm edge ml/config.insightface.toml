@@ -75,20 +75,27 @@ min_face_size = 50           # below ~50px an upscaled crop is mostly interpolat
 # transport = "ssh": legacy push through the uno-q-board submodule's
 # send_to_board.py, for when the board is a peripheral of some host machine.
 enabled = true
-transport = "http"
-url = "http://SCL-UNOQ05.local:8770"
-# Leave token empty here and export VERDICT_TOKEN instead; the env var wins,
-# which keeps the shared secret out of the repository.
-token = ""
 
-# transport = "ntfy": both sides make OUTBOUND https connections only, never
-# to each other, so a venue Wi-Fi that blocks device-to-device traffic
-# (client isolation -- common on hotel/motel guest networks) does not matter.
-# Needs real outbound internet on both devices; does not fix a captive portal.
-# Leave topic empty here and export NTFY_TOPIC instead -- anyone who knows the
-# topic can read/write it, so this is a demo-grade relay, not a private one.
-# ntfy_topic = "uno-q-4f44c8f99c523c1218421570"
-# ntfy_base_url = "https://ntfy.sh"
+# "ntfy": both sides make OUTBOUND https connections only, never to each
+# other -- proven on real hardware over a venue network with client
+# isolation (the router actively refused direct traffic between the two
+# devices; this sidesteps that entirely). Needs real outbound internet on
+# both devices; does not fix a captive portal blocking that internet access.
+# "http": board runs uno-q-listener/verdict_server.py and is reached directly
+# -- simpler, but requires the two devices to be able to reach each other.
+# "ssh": legacy push through the uno-q-board submodule's send_to_board.py.
+transport = "ntfy"
+
+# NEVER put a real topic or token here if this file is committed to a public
+# repo: anyone who reads it could drive the board's real lights and buzzer.
+# Both are read from the environment first, so the real values stay off disk
+# entirely -- export them in the shell that runs the app:
+#   export NTFY_TOPIC=your-long-random-topic
+#   export VERDICT_TOKEN=your-shared-secret   # only used by transport="http"
+ntfy_topic = ""
+ntfy_base_url = "https://ntfy.sh"
+url = "http://SCL-UNOQ05.local:8770"
+token = ""
 scripts_dir = "../uno-q-board/scripts"
 heartbeat_seconds = 30.0
 min_interval_seconds = 0.5

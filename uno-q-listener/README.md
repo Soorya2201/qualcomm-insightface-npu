@@ -31,13 +31,32 @@ update -- an HTTP POST on a LAN is single-digit milliseconds.
 
 ## Install (once, from the machine with the USB cable)
 
+The `--user` systemd bus needs a runtime directory that does not exist until
+the user has logged in at least once *or* lingering is enabled -- without it,
+`systemctl --user` fails with `Failed to connect to user scope bus`, and doing
+this step out of order is the most common reason the service silently never
+starts. Run `enable-linger` **first**, before touching `systemctl --user` at
+all -- it needs no root/sudo despite the name:
+
 ```bash
+adb shell 'loginctl enable-linger arduino'
 adb push verdict_server.py /home/arduino/rpc/
 adb shell 'mkdir -p ~/.config/systemd/user'
 adb push verdict-light.service /home/arduino/.config/systemd/user/
-adb shell 'systemctl --user daemon-reload && systemctl --user enable --now verdict-light'
-adb shell 'loginctl enable-linger arduino'
+adb shell 'export XDG_RUNTIME_DIR=/run/user/1000; systemctl --user daemon-reload && systemctl --user enable --now verdict-light'
 ```
+
+Confirmed on real hardware: `systemctl --user` run through a plain
+non-interactive `adb shell` command has no `XDG_RUNTIME_DIR` /
+`DBUS_SESSION_BUS_ADDRESS` of its own, so it must be exported in the same
+command, every time -- an interactive `adb shell` session behaves the same
+way unless you export it once at the top of that session too.
+
+Verify it survived: `systemctl --user status verdict-light` should show
+`Main PID` and `active (running)`, and stay that way after you close the adb
+session -- if the process (`ps aux | grep verdict`) disappears once the
+session closes, systemd was never actually managing it and this step needs
+redoing.
 
 `MPU/check_auth.py`, `MPU/rpc_base.py` and the `msgpack` folder must already be
 in `/home/arduino/rpc/` (see the board project's setup step 7), and the MCU
@@ -71,6 +90,12 @@ curl -X POST http://SCL-UNOQ05.local:8770/verdict \
 ```
 
 Expect LED 0 green, LED 1 red, one beep.
+
+## ntfy relay variant
+
+Use `verdict-light-ntfy.service` instead when the venue network has client
+isolation -- see [ntfy_poller.py](ntfy_poller.py) and the section below.
+Same install pattern, same linger requirement.
 
 ## Endpoints
 

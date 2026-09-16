@@ -2,12 +2,16 @@
 # self-sufficient: power it from any USB charger, it joins Wi-Fi and listens.
 # No host machine, no cable to a laptop, no ssh session.
 #
-# Install as a user service (no root needed):
+# Install as a user service (no root needed). Run enable-linger FIRST: the
+# --user bus has no runtime directory until a session has logged in or
+# lingering is on, so systemctl --user fails before this with "Failed to
+# connect to user scope bus" -- confirmed on real hardware.
+#   loginctl enable-linger arduino
 #   mkdir -p ~/.config/systemd/user
 #   cp verdict-light.service ~/.config/systemd/user/
+#   export XDG_RUNTIME_DIR=/run/user/1000
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now verdict-light
-#   loginctl enable-linger arduino      # keep running with nobody logged in
 [Unit]
 Description=Uno Q verdict listener (access-control status light)
 After=network-online.target
