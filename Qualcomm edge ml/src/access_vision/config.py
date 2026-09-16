@@ -88,8 +88,13 @@ class BoardConfig:
     ntfy_topic: str = ""             # long random string, not a guessable name
     ntfy_base_url: str = "https://ntfy.sh"
     scripts_dir: Path | None = None
-    heartbeat_seconds: float = 30.0
-    min_interval_seconds: float = 0.5
+    heartbeat_seconds: float = 30.0  # accepted for older configs; cadence is min_interval_seconds
+    min_interval_seconds: float = 0.5  # heartbeat cadence and minimum gap between sends
+    ntfy_budget_burst: int = 50        # ntfy.sh allows ~60; margin for other clients on the same IP
+    ntfy_budget_refill_seconds: float = 5.0
+    ntfy_budget_reserve: int = 10      # tokens heartbeats may not spend, kept for changes
+    max_queue: int = 100               # pending changes held before the oldest is dropped
+    ntfy_quota_backoff_seconds: float = 600.0  # pause after ntfy.sh reports its daily quota used up
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,14 @@ def load_config(path: str | Path) -> AppConfig:
     board = raw.get("board", {})
     if str(board.get("transport", "http")).lower() not in {"http", "ntfy", "ssh"}:
         raise ValueError("board.transport must be http, ntfy, or ssh")
+    if int(board.get("ntfy_budget_burst", 50)) < 1:
+        raise ValueError("board.ntfy_budget_burst must be at least 1")
+    if float(board.get("ntfy_budget_refill_seconds", 5.0)) <= 0:
+        raise ValueError("board.ntfy_budget_refill_seconds must be positive")
+    if not 0 <= int(board.get("ntfy_budget_reserve", 10)) < int(board.get("ntfy_budget_burst", 50)):
+        raise ValueError("board.ntfy_budget_reserve must be >= 0 and below ntfy_budget_burst")
+    if int(board.get("max_queue", 100)) < 1:
+        raise ValueError("board.max_queue must be at least 1")
     embedding_dimension = int(emb.get("embedding_dimension", 128))
     if embedding_dimension <= 0:
         raise ValueError("models.embedder.embedding_dimension must be positive")
@@ -210,5 +223,10 @@ def load_config(path: str | Path) -> AppConfig:
             ),
             heartbeat_seconds=float(board.get("heartbeat_seconds", 30.0)),
             min_interval_seconds=float(board.get("min_interval_seconds", 0.5)),
+            ntfy_budget_burst=int(board.get("ntfy_budget_burst", 50)),
+            ntfy_budget_refill_seconds=float(board.get("ntfy_budget_refill_seconds", 5.0)),
+            ntfy_budget_reserve=int(board.get("ntfy_budget_reserve", 10)),
+            max_queue=int(board.get("max_queue", 100)),
+            ntfy_quota_backoff_seconds=float(board.get("ntfy_quota_backoff_seconds", 600.0)),
         ),
     )

@@ -97,5 +97,24 @@ ntfy_base_url = "https://ntfy.sh"
 url = "http://SCL-UNOQ05.local:8770"
 token = ""
 scripts_dir = "../uno-q-board/scripts"
-heartbeat_seconds = 30.0
+# Heartbeat: the current state is re-sent at most once per min_interval_seconds
+# while frames keep arriving, as live proof the relay is flowing. Changes
+# (someone appears, leaves, or flips authorized/unauthorized) are queued and
+# delivered in order ahead of heartbeats; a failed change is retried.
 min_interval_seconds = 1.0
+max_queue = 100
+
+# ntfy only. Public ntfy.sh limits each client IP two ways, both HTTP 429:
+#   * request rate: burst of ~60, then one every 5 s (measured: at one publish
+#     per second, 81 succeeded, then 3 in 4 were refused). The budget below
+#     stays under it; heartbeats may not spend the last ntfy_budget_reserve
+#     tokens, so a change still goes out immediately.
+#   * DAILY MESSAGE QUOTA: 250 per IP (documented, and hit during testing).
+#     At a one-second heartbeat this lasts roughly 17 minutes, after which the
+#     board receives nothing -- changes included -- until it resets. The
+#     notifier logs that at ERROR and pauses for ntfy_quota_backoff_seconds.
+#     For a long-running demo use transport = "http" (no quota) or a paid tier.
+ntfy_budget_burst = 50
+ntfy_budget_refill_seconds = 5.0
+ntfy_budget_reserve = 10
+ntfy_quota_backoff_seconds = 600.0

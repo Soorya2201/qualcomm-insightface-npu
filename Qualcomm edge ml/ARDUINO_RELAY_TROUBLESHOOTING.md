@@ -117,11 +117,14 @@ Invoke-WebRequest -UseBasicParsing -Method Post `
 If this times out or returns `429`, the Arduino cannot react because the relay
 message is not being accepted.
 
-Check the board-side ntfy service over adb:
+Check the board-side ntfy service over adb. The unit is `verdict-light-ntfy`;
+`verdict-light` is the direct-HTTP variant and is not installed on this board, so
+querying it returns "Unit could not be found" and an empty journal -- which looks
+exactly like "the board received nothing" and sends diagnosis the wrong way.
 
 ```bash
-adb shell 'export XDG_RUNTIME_DIR=/run/user/1000; systemctl --user status verdict-light'
-adb shell 'export XDG_RUNTIME_DIR=/run/user/1000; journalctl --user -u verdict-light -n 80 --no-pager'
+adb shell 'export XDG_RUNTIME_DIR=/run/user/1000; systemctl --user status verdict-light-ntfy'
+adb shell 'export XDG_RUNTIME_DIR=/run/user/1000; journalctl --user -u verdict-light-ntfy -n 80 --no-pager'
 ```
 
 Check that the board and laptop are using the same topic:
@@ -131,22 +134,55 @@ $env:NTFY_TOPIC
 ```
 
 ```bash
-adb shell 'export XDG_RUNTIME_DIR=/run/user/1000; systemctl --user show verdict-light -p Environment'
+adb shell 'export XDG_RUNTIME_DIR=/run/user/1000; systemctl --user show verdict-light-ntfy -p Environment'
 ```
 
 ## Practical fixes
 
-1. Reduce ntfy pressure.
+1. Know which ntfy limit you hit -- there are two.
 
-   In `config.insightface.toml`, increase:
+   Public ntfy.sh limits each client IP two ways, and both return `429`:
 
-   ```toml
-   [board]
-   min_interval_seconds = 5.0
+   | Limit | Value | What happens |
+   |---|---|---|
+   | Request rate | burst of 60, then 1 per 5 s | Measured at one publish per second: 81 succeeded, then 3 in 4 were refused |
+   | **Daily messages** | **250 per IP** ([documented](https://github.com/binwiederhier/ntfy/blob/main/docs/publish.md#limitations)) | Every publish refused until the quota resets -- including red/beep changes |
+
+   The request rate is handled by the notifier's send budget
+   (`ntfy_budget_burst`, `ntfy_budget_refill_seconds`, `ntfy_budget_reserve`):
+   heartbeats slow to one per 5 s once the burst is spent, and tokens are held
+   back so a change still goes out immediately.
+
+   **The daily quota cannot be budgeted around at a one-second heartbeat.**
+   At the rate limit, 250 messages last about 17 minutes. After that the board
+   receives nothing for the rest of the day. The response body identifies it:
+
+   ```json
+   {"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan"}
    ```
 
-   One second is useful for proving liveness, but it can be too aggressive for
-   a public relay during continuous frame processing.
+   The notifier recognizes this, logs it once at `ERROR`, pauses publishing for
+   `ntfy_quota_backoff_seconds` instead of retrying, and keeps changes queued:
+
+   ```text
+   ERROR Board relay DAILY QUOTA EXHAUSTED: ... The board will receive nothing -- not even changes -- until the quota resets. ...
+   ```
+
+   Durable fixes: direct HTTP to the board (no quota; fix 2), a paid ntfy
+   tier, or sending changes only with no heartbeat -- which also requires
+   raising the board's `VERDICT_STALE_SECONDS`, or its lights clear 25 s into
+   any steady state.
+
+   Normal operation logs look like this:
+
+   ```text
+   INFO Board updated (change): 1 people (0 authorized, 1 denied) [...] -> published to ... [queued=0, budget=38]
+   INFO Board updated (heartbeat): 1 people (1 authorized, 0 denied) [...] -> published to ... [queued=0, budget=37]
+   INFO Board heartbeat slowed to one per 5s to stay under the relay rate limit (...)
+   ```
+
+   Changes are queued and delivered in order ahead of heartbeats, and a failed
+   change is retried instead of dropped.
 
 2. Prefer direct board HTTP when the laptop and Uno Q are on the same LAN.
 
@@ -158,6 +194,11 @@ adb shell 'export XDG_RUNTIME_DIR=/run/user/1000; systemctl --user show verdict-
 
    This bypasses ntfy entirely. It will not work on networks with client
    isolation, but when it works it is faster and avoids public relay limits.
+
+   Run only one board-side listener. Stop `verdict-light-ntfy` before starting
+   `verdict-light`: both drive the same Pixels, and the ntfy poller's stale
+   watchdog blanks the lights 25 s after its last ntfy message, overriding
+   whatever the HTTP listener just set.
 
 3. Keep ntfy only for isolated venue networks.
 

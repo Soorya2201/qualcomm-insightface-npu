@@ -223,20 +223,26 @@ def _build_notifier(config, processor) -> object | None:
         return build_ntfy_notifier(
             config.board.ntfy_topic,
             base_url=config.board.ntfy_base_url,
-            heartbeat_seconds=config.board.heartbeat_seconds,
             min_interval_seconds=config.board.min_interval_seconds,
+            # Public ntfy.sh rate-limits per client IP; stay under it rather
+            # than discovering it through 429s. Direct transports need no budget.
+            budget_burst=config.board.ntfy_budget_burst,
+            budget_refill_seconds=config.board.ntfy_budget_refill_seconds,
+            budget_reserve=config.board.ntfy_budget_reserve,
+            max_queue=config.board.max_queue,
+            quota_backoff_seconds=config.board.ntfy_quota_backoff_seconds,
         )
     if config.board.transport == "http":
         return build_http_notifier(
             config.board.url,
             config.board.token,
-            heartbeat_seconds=config.board.heartbeat_seconds,
             min_interval_seconds=config.board.min_interval_seconds,
+            max_queue=config.board.max_queue,
         )
     return build_notifier(
         scripts_dir=str(config.board.scripts_dir) if config.board.scripts_dir else None,
-        heartbeat_seconds=config.board.heartbeat_seconds,
         min_interval_seconds=config.board.min_interval_seconds,
+        max_queue=config.board.max_queue,
     )
 
 
