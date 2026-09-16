@@ -1,0 +1,23 @@
+config.toml
+.venv/
+.venv*/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+**/*.egg-info/
+
+# Large/generated local artifacts.
+models/
+data/
+diagnostics/
+qai_hub/
+repo_setup_download*.zip
+repo_setup_staging*/
+
+# ONNX Runtime/QNN generated contexts.
+*.onnx
+*.onnx_data
+*.ort
+*_ctx.onnx
