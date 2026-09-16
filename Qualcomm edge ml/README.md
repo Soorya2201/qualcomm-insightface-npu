@@ -197,6 +197,10 @@ A dated summary of the models, pipeline, completed work, performance, and
 commands is maintained in [PROJECT_LOG.txt](PROJECT_LOG.txt). The remaining
 performance ideas are recorded in
 [possible_optimisations.txt](possible_optimisations.txt).
+If the face model is producing unauthorized detections but the Uno Q does not
+blink red or beep, use
+[ARDUINO_RELAY_TROUBLESHOOTING.md](ARDUINO_RELAY_TROUBLESHOOTING.md) to locate
+where the board notification path is failing.
 
 ## Configuration
 
