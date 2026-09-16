@@ -82,10 +82,10 @@ class BoardConfig:
     """Arduino Uno Q status light. Disabled by default; absent tooling is not an error."""
 
     enabled: bool = False
-    transport: str = "http"
+    transport: str = "http"          # "http" board listens; "ntfy" relay via internet; "ssh" legacy push
     url: str = "http://SCL-UNOQ05.local:8770"
     token: str = ""
-    ntfy_topic: str = ""
+    ntfy_topic: str = ""             # long random string, not a guessable name
     ntfy_base_url: str = "https://ntfy.sh"
     scripts_dir: Path | None = None
     heartbeat_seconds: float = 30.0
