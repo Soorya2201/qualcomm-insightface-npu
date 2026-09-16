@@ -1,0 +1,52 @@
+[[cameras]]
+id = "camera-1"
+source = "webcam"
+
+[[cameras]]
+id = "camera-2"
+source = "mjpeg"
+url = "http://10.36.254.185:4747/video"
+
+[web]
+host = "127.0.0.1"
+port = 8765
+frame_width = 640
+frame_height = 480
+frame_interval_ms = 25.0
+open_browser = true
+
+[models.detector]
+model_id = "yolov5_face"
+path = "models/yolov5n-face-onnx-float/yolov5n_face.onnx"
+score_threshold = 0.50
+nms_iou_threshold = 0.50
+
+[models.embedder]
+model_id = "dinov3_vits16"
+path = "models/dinov3-vits16-onnx/onnx/model.onnx"
+embedding_dimension = 384
+input_width = 224
+input_height = 224
+output_name = "pooler_output"
+image_mean = [0.485, 0.456, 0.406]
+image_std = [0.229, 0.224, 0.225]
+
+[database]
+embeddings_path = "data/allowed_embeddings_dinov3_vits16.json"
+cosine_threshold = 0.40
+
+[enrollment]
+minimum_images_per_person = 3
+
+[runtime]
+provider = "QNNExecutionProvider"
+backend_path = "auto"
+performance_mode = "burst"
+require_npu = true
+context_cache = false
+
+[processing]
+alert_cooldown_seconds = 5.0
+decision_mode = "any_allowed"
+min_face_size = 32
+log_interval_seconds = 5.0

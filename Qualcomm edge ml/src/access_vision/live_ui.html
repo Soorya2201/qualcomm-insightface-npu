@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Access Vision | Security Console</title>
+  <style>
+    :root {
+      --bg: #070a0f;
+      --panel: #0d121a;
+      --line: #263241;
+      --text: #eef5ff;
+      --muted: #8c9aac;
+      --cyan: #3ddbd9;
+      --green: #2ee59d;
+      --red: #ff4d61;
+      --amber: #ffbf47;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at 25% 0, #132235 0, transparent 38%), var(--bg);
+      color: var(--text);
+      font-family: Inter, "Segoe UI", system-ui, sans-serif;
+    }
+    button, select { font: inherit; }
+    .shell { max-width: 1500px; margin: auto; padding: 18px; }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 16px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .mark {
+      width: 38px;
+      height: 38px;
+      border: 1px solid #3f566e;
+      background: linear-gradient(145deg, #19334a, #0b121b);
+      display: grid;
+      place-items: center;
+      color: var(--cyan);
+      font-weight: 900;
+      box-shadow: 0 0 22px #3ddbd922;
+    }
+    h1 { font-size: 18px; letter-spacing: .14em; text-transform: uppercase; margin: 0; }
+    .subtitle { font-size: 12px; color: var(--muted); margin-top: 3px; }
+    .privacy {
+      font: 11px ui-monospace, Consolas, monospace;
+      color: #92a6bb;
+      border: 1px solid var(--line);
+      padding: 7px 10px;
+      background: #0a1017;
+    }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 16px; }
+    .monitor, .side-card {
+      background: linear-gradient(180deg, #101720, #090d13);
+      border: 1px solid var(--line);
+      box-shadow: 0 18px 55px #0008;
+    }
+    .monitor-head {
+      height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line);
+      font: 12px ui-monospace, Consolas, monospace;
+    }
+    .live-state { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #55606d; }
+    .dot.live { background: var(--red); box-shadow: 0 0 12px var(--red); animation: pulse 1.2s infinite; }
+    @keyframes pulse { 50% { opacity: .38; } }
+    .viewport { position: relative; aspect-ratio: 4/3; background: #020305; overflow: hidden; }
+    canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .viewport::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(0deg, #ffffff05 0, #ffffff05 1px, transparent 1px, transparent 4px);
+      mix-blend-mode: screen;
+    }
+    .hud {
+      position: absolute;
+      z-index: 2;
+      font: 12px ui-monospace, Consolas, monospace;
+      text-shadow: 0 1px 3px #000;
+    }
+    .top-left { top: 14px; left: 16px; }
+    .top-right { top: 14px; right: 16px; text-align: right; }
+    .bottom-left { bottom: 14px; left: 16px; }
+    .rec { color: #fff; background: #d91f36; padding: 4px 7px; font-weight: 800; letter-spacing: .12em; }
+    .camera-tag {
+      margin-top: 8px;
+      color: #dcecff;
+      background: #07111bbb;
+      padding: 5px 8px;
+      border-left: 2px solid var(--cyan);
+    }
+    .connection { color: var(--amber); }
+    .controls {
+      display: flex;
+      gap: 10px;
+      align-items: end;
+      padding: 13px;
+      border-top: 1px solid var(--line);
+      background: #0b1017;
+    }
+    .field { display: grid; gap: 5px; min-width: 220px; }
+    label { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+    select { color: var(--text); background: #080d13; border: 1px solid #344354; padding: 10px 12px; outline: none; }
+    button {
+      border: 0;
+      padding: 11px 18px;
+      background: var(--cyan);
+      color: #031313;
+      font-weight: 800;
+      letter-spacing: .05em;
+      cursor: pointer;
+    }
+    button.stop { background: #293442; color: #e7eef8; }
+    button:hover { filter: brightness(1.08); }
+    .side { display: grid; gap: 12px; align-content: start; }
+    .side-card { padding: 14px; }
+    .side-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: #cbd8e6;
+      font-size: 11px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .model-chip { color: var(--cyan); font: 10px ui-monospace, Consolas, monospace; text-transform: none; letter-spacing: 0; }
+    .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .metric { background: #080d13; border: 1px solid #1d2936; padding: 10px; }
+    .metric .value { font: 700 20px ui-monospace, Consolas, monospace; }
+    .metric .name { font-size: 9px; color: var(--muted); letter-spacing: .12em; text-transform: uppercase; margin-top: 4px; }
+    .faces, .events { display: grid; gap: 7px; max-height: 240px; overflow: auto; }
+    .empty { color: #667689; font-size: 12px; padding: 12px 0; }
+    .face-row, .event {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 9px;
+      background: #090f16;
+      border-left: 3px solid var(--line);
+      font: 11px ui-monospace, Consolas, monospace;
+    }
+    .face-row.allowed, .event.allowed { border-color: var(--green); }
+    .face-row.denied, .event.denied { border-color: var(--red); }
+    .allowed-text { color: var(--green); }
+    .denied-text { color: var(--red); }
+    .event-time { color: var(--muted); }
+    details { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; }
+    summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+    pre { font: 10px ui-monospace, Consolas, monospace; color: #91a4b7; white-space: pre-wrap; max-height: 180px; overflow: auto; }
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      .side { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 640px) {
+      .shell { padding: 8px; }
+      header { align-items: flex-start; }
+      .privacy { display: none; }
+      .side { grid-template-columns: 1fr; }
+      .controls { align-items: stretch; flex-direction: column; }
+      .field { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand"><div class="mark">AV</div><div><h1>Snapdragon Access Vision</h1><div class="subtitle">Local NPU security monitoring console</div></div></div>
+      <div class="privacy">LOCAL PROCESSING // NO CLOUD UPLINK</div>
+    </header>
+    <div class="layout">
+      <section class="monitor">
+        <div class="monitor-head"><span>LIVE SURVEILLANCE</span><div class="live-state"><span id="stateDot" class="dot"></span><span id="stateText">STANDBY</span></div></div>
+        <div class="viewport">
+          <canvas id="canvas"></canvas>
+          <div class="hud top-left"><span id="rec" class="rec" hidden>● REC</span><div id="cameraTag" class="camera-tag">NO CAMERA SELECTED</div></div>
+          <div class="hud top-right"><div id="clock"></div><div id="resolution"></div></div>
+          <div id="connection" class="hud bottom-left connection">SYSTEM READY</div>
+        </div>
+        <div class="controls"><div class="field"><label for="camera">Camera source</label><select id="camera"></select></div><button id="start">Start monitoring</button></div>
+      </section>
+      <aside class="side">
+        <section class="side-card">
+          <div class="side-title"><span>Inference telemetry</span><span id="modelChip" class="model-chip"></span></div>
+          <div class="metrics">
+            <div class="metric"><div id="fps" class="value">0.0</div><div class="name">Processed FPS</div></div>
+            <div class="metric"><div id="latency" class="value">—</div><div class="name">Total latency</div></div>
+            <div class="metric"><div id="detectMs" class="value">—</div><div class="name">Detection ms</div></div>
+            <div class="metric"><div id="embedMs" class="value">—</div><div class="name">Embedding ms</div></div>
+          </div>
+        </section>
+        <section class="side-card"><div class="side-title"><span>Current detections</span><span id="faceCount" class="model-chip">0 faces</span></div><div id="faces" class="faces"><div class="empty">Waiting for video…</div></div></section>
+        <section class="side-card"><div class="side-title"><span>Security events</span><span class="model-chip">rolling log</span></div><div id="events" class="events"><div class="empty">No events recorded.</div></div><details><summary>Raw inference response</summary><pre id="status">Stopped</pre></details></section>
+      </aside>
+    </div>
+  </div>
+  <video id="video" autoplay muted playsinline hidden></video>
+  <img id="remote" alt="Remote camera" hidden>
+  <script>
+    const cfg = __ACCESS_VISION_SETTINGS__;
+    const $ = selector => document.querySelector(selector);
+    const video = $('#video'), remote = $('#remote'), canvas = $('#canvas'), status = $('#status');
+    const camera = $('#camera'), startButton = $('#start'), connection = $('#connection');
+    const stateDot = $('#stateDot'), stateText = $('#stateText'), rec = $('#rec'), cameraTag = $('#cameraTag');
+    const fpsEl = $('#fps'), latencyEl = $('#latency'), detectEl = $('#detectMs'), embedEl = $('#embedMs');
+    const facesEl = $('#faces'), faceCount = $('#faceCount'), eventsEl = $('#events');
+    $('#resolution').textContent = cfg.width + ' × ' + cfg.height + ' // ' + cfg.target_fps + ' FPS TARGET';
+    $('#modelChip').textContent = cfg.embedder;
+    cfg.cameras.forEach(item => camera.add(new Option(item.id.toUpperCase() + '  //  ' + item.source.toUpperCase(), item.id)));
+
+    let frameSource = null, running = false, framesInWindow = 0, fpsWindow = performance.now();
+    let lastEventKey = '', lastEventAt = 0, eventRows = [];
+    function nowText() { return new Date().toLocaleString(undefined, {hour12: false}); }
+    setInterval(() => $('#clock').textContent = nowText(), 250);
+    $('#clock').textContent = nowText();
+
+    function setConnection(message, error = false) {
+      connection.textContent = message;
+      connection.style.color = error ? 'var(--red)' : 'var(--amber)';
+      status.textContent = message;
+    }
+    function setRunning(value) {
+      running = value;
+      stateDot.classList.toggle('live', value);
+      stateText.textContent = value ? 'MONITORING' : 'STANDBY';
+      rec.hidden = !value;
+      startButton.textContent = value ? 'Stop monitoring' : 'Start monitoring';
+      startButton.classList.toggle('stop', value);
+      camera.disabled = value;
+    }
+    function stopCamera() {
+      setRunning(false);
+      if (video.srcObject) {
+        for (const track of video.srcObject.getTracks()) track.stop();
+        video.srcObject = null;
+      }
+      remote.onload = null;
+      remote.onerror = null;
+      remote.removeAttribute('src');
+      frameSource = null;
+      setConnection('MONITORING STOPPED');
+      cameraTag.textContent = 'NO ACTIVE FEED';
+    }
+    startButton.onclick = async () => {
+      if (running) { stopCamera(); return; }
+      try {
+        const selected = cfg.cameras.find(item => item.id === camera.value);
+        cameraTag.textContent = selected.id.toUpperCase() + ' // ' + selected.source.toUpperCase();
+        if (selected.source === 'webcam') {
+          video.srcObject = await navigator.mediaDevices.getUserMedia({
+            video: {width: {ideal: cfg.width}, height: {ideal: cfg.height}, frameRate: {ideal: cfg.target_fps, max: cfg.target_fps}},
+            audio: false
+          });
+          await video.play();
+          frameSource = video;
+        } else {
+          frameSource = remote;
+          remote.onload = () => { if (running) setConnection('REMOTE FEED ONLINE'); };
+          remote.onerror = () => {
+            if (!running) return;
+            stopCamera();
+            setConnection('CAMERA ERROR // ' + selected.id + ' UNAVAILABLE OR IN USE', true);
+          };
+          remote.src = '/api/camera-stream?' + new URLSearchParams({camera: selected.id, attempt: Date.now()});
+        }
+        setRunning(true);
+        setConnection('CONNECTING // ' + selected.id.toUpperCase());
+        tick();
+      } catch (error) {
+        stopCamera();
+        setConnection('CAMERA ERROR // ' + error, true);
+      }
+    };
+    function corner(c, x, y, dx, dy, color) {
+      c.strokeStyle = color; c.lineWidth = 3; c.beginPath();
+      c.moveTo(x, y + dy * 18); c.lineTo(x, y); c.lineTo(x + dx * 18, y); c.stroke();
+    }
+    function drawResult(c, out) {
+      for (const face of (out.faces || [])) {
+        const [x1, y1, x2, y2] = face.bbox, color = face.allowed ? '#2ee59d' : '#ff4d61';
+        c.strokeStyle = color; c.lineWidth = 1; c.strokeRect(x1, y1, x2 - x1, y2 - y1);
+        corner(c, x1, y1, 1, 1, color); corner(c, x2, y1, -1, 1, color);
+        corner(c, x1, y2, 1, -1, color); corner(c, x2, y2, -1, -1, color);
+        const identity = face.allowed ? (face.person_id || 'ALLOWED') : 'UNAUTHORIZED';
+        const label = identity.toUpperCase() + '  ' + Number(face.cosine_similarity).toFixed(3);
+        c.font = '700 15px ui-monospace,Consolas,monospace';
+        const width = c.measureText(label).width, pad = 6, labelY = Math.max(0, y1 - 25);
+        c.fillStyle = color; c.fillRect(x1, labelY, width + pad * 2, 23);
+        c.fillStyle = '#06100e'; c.fillText(label, x1 + pad, labelY + 16);
+        c.fillStyle = '#3ddbd9';
+        for (const point of (face.landmarks || [])) { c.beginPath(); c.arc(point[0], point[1], 2.5, 0, Math.PI * 2); c.fill(); }
+      }
+    }
+    function renderFaces(out) {
+      const list = out.faces || [];
+      faceCount.textContent = list.length + ' face' + (list.length === 1 ? '' : 's');
+      facesEl.innerHTML = list.length ? '' : '<div class="empty">No face detected in current frame.</div>';
+      for (const face of list) {
+        const row = document.createElement('div');
+        row.className = 'face-row ' + (face.allowed ? 'allowed' : 'denied');
+        const name = face.allowed ? (face.person_id || 'ALLOWED') : 'UNAUTHORIZED';
+        row.innerHTML = '<span class="' + (face.allowed ? 'allowed-text' : 'denied-text') + '">' + name + '</span><span>' + Number(face.cosine_similarity).toFixed(3) + '</span>';
+        facesEl.appendChild(row);
+      }
+    }
+    function addEvent(out) {
+      if (!out.faces || !out.faces.length) return;
+      const names = out.faces.map(item => item.allowed ? (item.person_id || 'allowed') : 'unauthorized').join(',');
+      const key = out.camera + '|' + out.status + '|' + names, now = Date.now();
+      if (key === lastEventKey && now - lastEventAt < 5000) return;
+      lastEventKey = key; lastEventAt = now;
+      eventRows.unshift({time: new Date().toLocaleTimeString(undefined, {hour12: false}), camera: out.camera, status: out.status, names});
+      eventRows = eventRows.slice(0, 20);
+      eventsEl.innerHTML = '';
+      for (const item of eventRows) {
+        const row = document.createElement('div');
+        row.className = 'event ' + (item.status === 'allowed' ? 'allowed' : 'denied');
+        row.innerHTML = '<span><span class="event-time">' + item.time + '</span> ' + item.camera + '<br>' + item.names + '</span><span class="' + (item.status === 'allowed' ? 'allowed-text' : 'denied-text') + '">' + item.status.toUpperCase() + '</span>';
+        eventsEl.appendChild(row);
+      }
+    }
+    function updateMetrics(out) {
+      framesInWindow++;
+      const now = performance.now(), elapsed = now - fpsWindow;
+      if (elapsed >= 1000) {
+        fpsEl.textContent = (framesInWindow * 1000 / elapsed).toFixed(1);
+        framesInWindow = 0; fpsWindow = now;
+      }
+      const p = out.performance || {};
+      latencyEl.textContent = p.total_ms == null ? '—' : Number(p.total_ms).toFixed(1);
+      detectEl.textContent = p.detector_ms == null ? '—' : Number(p.detector_ms).toFixed(1);
+      embedEl.textContent = p.embedding_ms == null ? '—' : Number(p.embedding_ms).toFixed(1);
+    }
+    async function tick() {
+      if (!running) return;
+      const started = performance.now();
+      if (frameSource === remote && (!remote.naturalWidth || !remote.naturalHeight)) { setConnection('WAITING FOR REMOTE FRAME'); setTimeout(tick, 250); return; }
+      if (frameSource === video && video.readyState < 2) { setConnection('WAITING FOR WEBCAM FRAME'); setTimeout(tick, 100); return; }
+      try {
+        canvas.width = cfg.width; canvas.height = cfg.height;
+        const c = canvas.getContext('2d', {willReadFrequently: true});
+        c.drawImage(frameSource, 0, 0, cfg.width, cfg.height);
+        const pixels = c.getImageData(0, 0, cfg.width, cfg.height).data;
+        const query = new URLSearchParams({camera: camera.value, width: cfg.width, height: cfg.height});
+        const response = await fetch('/api/frame?' + query, {method: 'POST', headers: {'Content-Type': 'application/octet-stream'}, body: pixels});
+        const out = await response.json();
+        if (!response.ok || out.error) throw new Error(out.error || ('HTTP ' + response.status));
+        drawResult(c, out); renderFaces(out); addEvent(out); updateMetrics(out);
+        status.textContent = JSON.stringify(out, null, 2);
+        connection.textContent = out.status === 'unauthorized' ? 'SECURITY ALERT // UNAUTHORIZED FACE' : out.status === 'allowed' ? 'ACCESS MATCH CONFIRMED' : 'SCANNING // NO FACE';
+        connection.style.color = out.status === 'unauthorized' ? 'var(--red)' : out.status === 'allowed' ? 'var(--green)' : 'var(--amber)';
+      } catch (error) {
+        setConnection('PROCESSING ERROR // ' + error, true);
+      }
+      const remaining = Math.max(0, cfg.interval - (performance.now() - started));
+      setTimeout(tick, remaining);
+    }
+  </script>
+</body>
+</html>

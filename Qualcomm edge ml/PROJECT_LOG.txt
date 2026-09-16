@@ -1,0 +1,156 @@
+SNAPDRAGON ACCESS VISION - PROJECT LOG
+======================================
+
+Last updated: 2026-09-15
+
+GOAL
+----
+
+Build a fully local, two-camera access-monitoring prototype on Snapdragon X
+Elite. Each frame is processed on-device: detect faces, produce identity
+embeddings, compare them with an allow-list, draw CCTV overlays, and emit an
+unauthorized JSON event when no allowed identity is present.
+
+COMPLETED
+---------
+
+- Created a Python 3.11 ARM64 application using ONNX Runtime QNN.
+- Removed the OpenCV dependency. Resize, alignment, preprocessing, NMS, cosine
+  matching, and RGBA decoding use NumPy and browser APIs.
+- Added local webcam capture and remote MJPEG/DroidCam support.
+- Added a localhost MJPEG proxy to avoid browser cross-origin restrictions.
+- Added YOLOv5-Face detection with boxes and five facial landmarks.
+- Added folder-based enrollment with multiple templates per identity.
+- Stopped averaging enrollment vectors; every accepted image is stored.
+- Added dimension validation for incompatible embedding databases.
+- Added separate configuration/database paths for every embedding model.
+- Added a 40 FPS capture target with adaptive backpressure.
+- Added startup, enrollment, NPU, database, DEBUG, and periodic performance
+  logging.
+- Added a responsive CCTV dashboard with REC/time/camera overlays, inference
+  telemetry, detections, rolling security events, raw JSON, and start/stop.
+- Saved the profiling/optimization plan in possible_optimisations.txt.
+- Removed disposable Python, pytest, failed Workbench, and stale QNN caches.
+
+EMBEDDING MODELS EVALUATED
+--------------------------
+
+1. MobileFaceNet W8A16
+   Output: 128D
+   Result: initial experiment; replaced
+   Active database: none
+
+2. CavaFace float
+   Output: 512D
+   Result: reliable baseline
+   Config: config.cavaface.toml
+   Database: data/allowed_embeddings.json
+
+3. DINOv3 ViT-S
+   Output: 384D
+   Result: same-person and different-person scores overlapped; not recommended
+   for identity recognition without face-specific fine-tuning
+   Config: config.dinov3.toml
+   Database: data/allowed_embeddings_dinov3_vits16.json
+
+4. InsightFace W600K R50 W8A16
+   Output: 512D
+   Result: current default; compiled QNN context
+   Config: config.toml
+   Database: data/allowed_embeddings_insightface_w600k_r50.json
+
+DINOv3 ViT-L assets were downloaded during experimentation but are not used by
+the live identity pipeline.
+
+CURRENT DEFAULT PIPELINE
+------------------------
+
+camera frame
+  -> YOLOv5-Face on QNN/NPU
+  -> five facial landmarks
+  -> ArcFace alignment to 112x112
+  -> BGR (x - 127.5) / 127.5
+  -> InsightFace W600K R50 W8A16 QNN context
+  -> L2-normalized 512D embedding
+  -> cosine comparison against all stored templates
+  -> allowed/unauthorized UI and JSON result
+
+The compiled InsightFace artifact is stored in:
+
+models/compiled/w600k_r50_qnn_x_elite/
+  w600k_r50_qnn.onnx
+  model.bin
+
+Both files must remain together. The wrapper references model.bin by relative
+path.
+
+MEASURED PERFORMANCE
+--------------------
+
+Earlier CavaFace pipeline:
+
+  Current unoptimized YOLOv5-Face: approximately 83.5 ms
+  CavaFace application embedding: approximately 10.8 ms per face
+  One-face serial pipeline: approximately 94.3 ms / 10.6 FPS
+
+Current compiled InsightFace embedder:
+
+  Model load: approximately 352 ms
+  Mean embedding: approximately 2.06 ms
+  P95 embedding: approximately 2.30 ms
+  Active provider: QNNExecutionProvider
+  Output: 512D, L2 norm 1.0
+
+YOLO remains the performance bottleneck. Workbench-compiling or replacing the
+detector is the next high-impact optimization.
+
+EMBEDDING PERSISTENCE
+---------------------
+
+Enrollment is not performed at live startup. Live mode loads the selected JSON
+database once and reuses it. Enrollment is required only when:
+
+- selecting a new embedding model or precision;
+- changing alignment or preprocessing;
+- adding or removing allowed identities; or
+- intentionally rebuilding the database.
+
+Embeddings from different models are never interchangeable.
+
+COMMANDS
+--------
+
+Generate the current InsightFace database once:
+
+  .\.venv311\Scripts\Activate.ps1
+  python -m access_vision.enroll --config config.toml
+
+Run the current CCTV application:
+
+  python -m access_vision.cli --config config.toml --log-level INFO
+
+Enable one log line per processed frame:
+
+  python -m access_vision.cli --config config.toml --log-level DEBUG
+
+Run the preserved CavaFace pipeline:
+
+  python -m access_vision.cli --config config.cavaface.toml
+
+NEXT WORK
+---------
+
+1. Workbench-optimize YOLOv5-Face and compare float, W8A16, and W8A8.
+2. Add temporal tracking and reuse identity results across nearby frames.
+3. Collect representative detector calibration frames from both cameras.
+4. Calibrate the InsightFace threshold with genuine and impostor pairs.
+5. Add GenieX asynchronously for event-level VLM descriptions.
+6. Add durable event persistence if incidents must survive a restart.
+
+DATA AND LICENSING
+------------------
+
+Face embeddings are biometric data. Keep databases local, obtain consent, and
+define retention/deletion rules. The application code and InsightFace-derived
+weights have different licensing terms; the supplied W600K artifact is for
+non-commercial research unless appropriate model permission is obtained.

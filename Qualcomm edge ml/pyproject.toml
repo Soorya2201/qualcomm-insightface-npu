@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=65.5"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snapdragon-access-vision"
+version = "0.2.0"
+description = "Two-camera, on-device face allow-listing on Snapdragon X Elite"
+# onnxruntime-qnn's prebuilt Windows ARM64 package currently requires Python 3.11.x.
+requires-python = "==3.11.*"
+dependencies = [
+  "numpy>=1.26.4,<3",
+  "onnxruntime-qnn>=1.18",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[project.scripts]
+access-vision = "access_vision.cli:main"
+access-enroll = "access_vision.enroll:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+access_vision = ["*.html"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
