@@ -137,6 +137,28 @@ Run the preserved CavaFace pipeline:
 
   python -m access_vision.cli --config config.cavaface.toml
 
+GENIEX VLM ATTRIBUTE DESCRIPTION (added, unverified on device)
+----------------------------------------------------------------
+
+Unauthorized event -> wider crop of the same frame -> GenieX
+(Qwen2.5-VL-7B-Instruct, W4A16 -- Qualcomm's only published quantized bundle
+for this model, and faster/smaller on the NPU than int8 would have been
+anyway) -> outfit color, glasses, hat -> JSON event alongside the alert.
+
+Runs on a background thread, triggered only on "unauthorized", rate-limited
+across all people (config [vlm].cooldown_seconds) so it never competes with
+the detector/embedder for the NPU the way a per-frame VLM call would.
+
+src/access_vision/vlm.py; config [vlm]; scripts/ensure_vlm_model.py fetches
+the bundle. tests/test_vlm.py: 28 tests -- PNG encoder verified byte-for-byte
+against a real decoder, crop math, the GenieX request/error shapes, the
+response parser against ten messy plausible outputs, worker thread trigger/
+cooldown/failure isolation, and the pipeline calling it once per person.
+
+NOT verified: whether `geniex serve` resolves the model id this sends to the
+bundle the fetch script downloads. Needs the real Snapdragon + GenieX --
+see vlm.py's and ensure_vlm_model.py's docstrings for the exact check.
+
 NEXT WORK
 ---------
 
@@ -144,7 +166,7 @@ NEXT WORK
 2. Add temporal tracking and reuse identity results across nearby frames.
 3. Collect representative detector calibration frames from both cameras.
 4. Calibrate the InsightFace threshold with genuine and impostor pairs.
-5. Add GenieX asynchronously for event-level VLM descriptions.
+5. Confirm the GenieX model-lookup link above on the real device.
 6. Add durable event persistence if incidents must survive a restart.
 
 DATA AND LICENSING

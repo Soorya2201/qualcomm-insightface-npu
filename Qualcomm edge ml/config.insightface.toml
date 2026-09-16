@@ -118,3 +118,23 @@ ntfy_budget_burst = 50
 ntfy_budget_refill_seconds = 5.0
 ntfy_budget_reserve = 10
 ntfy_quota_backoff_seconds = 600.0
+
+[vlm]
+# GenieX vision-language description of unauthorized faces: outfit color,
+# glasses, hat. Disabled by default -- absent GenieX tooling is not an error,
+# it just means no descriptions. Run scripts/ensure_vlm_model.py first if
+# enabling this; see src/access_vision/vlm.py's module docstring for why
+# Qwen2.5-VL-7B-Instruct / w4a16 (Qualcomm does not publish an int8/w8a8
+# bundle for this model -- w4a16 is smaller and faster on the NPU anyway,
+# not a fallback), and why this triggers only on "unauthorized", never on
+# every frame, so it never competes with the detector/embedder for the NPU
+# the way a per-frame VLM call would.
+enabled = false
+base_url = "http://127.0.0.1:18181/v1"   # GenieX's local OpenAI-compatible server
+model = "Qwen2.5-VL-7B-Instruct"
+trigger_on = "unauthorized"              # or "allowed", never both/every-frame
+crop_expand = 1.0                        # fraction of the face box added on every side
+cooldown_seconds = 10.0                  # minimum gap between VLM calls, across all people
+max_tokens = 64
+timeout_seconds = 30.0
+max_queue = 4

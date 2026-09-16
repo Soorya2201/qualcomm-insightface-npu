@@ -376,3 +376,90 @@ drift from it. Requires the submodule (`git submodule update --init`).
 
 Verified against the live relay: sent authorized, unauthorized, and empty
 test messages and confirmed each printed correctly, color-coded, in real time.
+
+## Attribute description via GenieX (optional)
+
+When a face does not match the allow-list, `[vlm]` can send a wider crop of
+the same frame to a local GenieX VLM and get back three attributes: outfit
+color, glasses, hat. Disabled by default.
+
+```
+unauthorized event  →  wider crop  →  GenieX (Qwen2.5-VL-7B-Instruct, W4A16)  →  outfit color, glasses, hat
+```
+
+### Why this model, why this precision
+
+Qwen2.5-VL-7B-Instruct is Qualcomm's published AI Hub VLM. Qualcomm's catalog
+offers exactly one quantized precision for it: **W4A16** (4-bit weights,
+16-bit activations) — there is no int8/w8a8 bundle to fetch, and quantizing
+one ourselves would need a GPU with on the order of 80 GB VRAM per Qualcomm's
+own model card. W4A16 is not a fallback: it is smaller and generally faster
+on the Hexagon NPU than an 8-bit scheme, so it already serves "runs best on
+the NPU" better than int8 would have.
+
+### Why this never runs per frame
+
+A VLM call is a multi-second generation, not a millisecond CNN forward pass.
+`VlmDescriber` (`src/access_vision/vlm.py`) runs it on a background thread,
+triggered only by `[vlm].trigger_on` (`"unauthorized"` by default) and
+rate-limited by `[vlm].cooldown_seconds` across all people, so it never
+competes with the detector and embedder for the same NPU the way a per-frame
+call would. A result comes back as its own JSON event on the same stream as
+the alert sink:
+
+```json
+{"tag":"vlm_description","person_id":null,"outfit_color":"blue","glasses":true,"hat":false}
+```
+
+### Setup
+
+```powershell
+python scripts\ensure_vlm_model.py
+```
+
+This checks whether GenieX already reports the model, then whether
+`models/vlm/` already has it, and only then fetches it:
+
+```powershell
+qai-hub-models fetch Qwen2.5-VL-7B-Instruct --runtime geniex_qairt --precision w4a16 -o models/vlm
+```
+
+Needs the `qai-hub-models` package and the same free AI Hub token already
+used for the InsightFace pipeline in this repo's root `scripts/`
+(`qai-hub configure --api_token ...`).
+
+**One thing to verify once, on this device, before trusting it in a demo:**
+Qualcomm's docs do not fully specify how a `qai-hub-models fetch` bundle in
+an arbitrary directory becomes something `geniex serve` resolves under the
+name this app sends. After fetching, start `geniex serve` and run:
+
+```powershell
+curl http://127.0.0.1:18181/v1/models
+```
+
+Confirm the listed id matches `[vlm].model` exactly. If it does not, pull the
+same identifier directly through GenieX's own CLI instead — the pattern
+already used successfully for an LLM in the `uno-q-board` submodule's
+`x_elite/client.py`:
+
+```powershell
+geniex pull Qwen2.5-VL-7B-Instruct
+```
+
+Then enable it:
+
+```toml
+[vlm]
+enabled = true
+```
+
+### What is tested without the real device, and what is not
+
+The PNG encoder (byte-for-byte against a real decoder), the wider-crop math,
+the exact request GenieX's documented API expects, both failure modes
+(server unreachable, malformed response), the response parser against ten
+deliberately messy plausible outputs, the worker thread's trigger/cooldown/
+failure isolation, and the pipeline calling it once per person with the
+correct status — `tests/test_vlm.py`, 28 tests. **Not tested**: the actual
+GenieX model-lookup link described above, which needs the real Snapdragon
+NPU and a GenieX install to confirm.

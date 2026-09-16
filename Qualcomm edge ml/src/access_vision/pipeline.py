@@ -10,6 +10,7 @@ import numpy as np
 
 from .matching import AllowList, Match
 from .vision import Face, prepare_face
+from .vlm import expand_crop
 
 LOGGER = logging.getLogger(__name__)
 
@@ -24,12 +25,19 @@ class JsonEventSink:
 
 
 class FrameProcessor:
-    def __init__(self, config, detector, embedder, allow_list: AllowList, sink=None) -> None:
+    def __init__(
+        self, config, detector, embedder, allow_list: AllowList, sink=None, describer=None
+    ) -> None:
         self.config = config
         self.detector = detector
         self.embedder = embedder
         self.allow_list = allow_list
         self.sink = sink or JsonEventSink()
+        # Optional VlmDescriber (vlm.py). None when [vlm].enabled is false, in
+        # which case this stage costs nothing -- see the crop_expand comment
+        # below. Async and event-triggered by construction: see vlm.py's
+        # module docstring for why a VLM is never called per-frame.
+        self.describer = describer
         self.last_alert: dict[str, float] = {}
         self._stats: dict[str, dict[str, float]] = {}
 
@@ -106,7 +114,19 @@ class FrameProcessor:
                 embedding_started = time.perf_counter()
                 embedding = self.embedder.embed(crop)
                 embedding_ms += (time.perf_counter() - embedding_started) * 1000
-                matches.append((self.allow_list.match(embedding), face))
+                match = self.allow_list.match(embedding)
+                matches.append((match, face))
+                if self.describer is not None:
+                    # Per person, not per frame: a frame with one authorized and
+                    # one unauthorized person must describe only the second.
+                    # expand_crop reuses vision.crop_face's own edge-clamping
+                    # logic with a larger margin (config.vlm.crop_expand) than
+                    # the tight embedding crop, since outfit color and headwear
+                    # need shoulders and the top of the head, not just a face.
+                    status = "authorized" if match.allowed else "unauthorized"
+                    crop = expand_crop(frame_rgb, face.xyxy, self.config.vlm.crop_expand)
+                    if crop.size:
+                        self.describer.maybe_describe(status, match.person_id, crop)
 
         if not matches:
             total_ms = (time.perf_counter() - frame_started) * 1000

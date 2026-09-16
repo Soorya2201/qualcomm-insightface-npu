@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 import webbrowser
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -13,9 +14,10 @@ from urllib.request import ProxyHandler, Request, build_opener
 import numpy as np
 
 from .board import build_http_notifier, build_notifier, build_ntfy_notifier
+from .vlm import GenieXVlmClient, VlmDescriber
 from .config import load_config
 from .matching import AllowList
-from .pipeline import FrameProcessor
+from .pipeline import FrameProcessor, JsonEventSink
 from .runtime import QnnSession
 from .vision import FaceDetector, FaceEmbedder, prepare_face
 
@@ -246,6 +248,41 @@ def _build_notifier(config, processor) -> object | None:
     )
 
 
+def _build_describer(config, sink) -> VlmDescriber | None:
+    """GenieX VLM description of unauthorized faces, or None if [vlm] is off.
+
+    See vlm.py's module docstring for why this exists, why it is async and
+    event-triggered rather than per-frame, and what about the GenieX model
+    lookup still needs confirming on real Windows-ARM64 + NPU hardware.
+    """
+    if not config.vlm.enabled:
+        return None
+    client = GenieXVlmClient(
+        base_url=config.vlm.base_url,
+        model=config.vlm.model,
+        max_tokens=config.vlm.max_tokens,
+        timeout=config.vlm.timeout_seconds,
+    )
+
+    def on_result(person_id, attributes):
+        sink.emit({
+            "tag": "vlm_description",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "person_id": person_id,
+            "outfit_color": attributes.outfit_color,
+            "glasses": attributes.glasses,
+            "hat": attributes.hat,
+        })
+
+    return VlmDescriber(
+        client.describe,
+        on_result,
+        trigger_on=config.vlm.trigger_on,
+        cooldown_seconds=config.vlm.cooldown_seconds,
+        max_queue=config.vlm.max_queue,
+    )
+
+
 def _build_live_runtime(config) -> dict:
     LOGGER.info(
         "Loading live runtime detector=%s embedder=%s embedding_dimension=%d alignment=%s threshold=%.3f",
@@ -284,7 +321,10 @@ def _build_live_runtime(config) -> dict:
         len(allow_list.names),
         allow_list.embeddings.shape[1],
     )
-    processor = FrameProcessor(config, detector, embedder, allow_list)
+    sink = JsonEventSink()
+    describer = _build_describer(config, sink)
+    LOGGER.info("VLM description %s", "enabled" if describer else "disabled")
+    processor = FrameProcessor(config, detector, embedder, allow_list, sink=sink, describer=describer)
     notifier = _build_notifier(config, processor)
     LOGGER.info("Board output %s", "enabled" if notifier else "unavailable/disabled")
     return {
@@ -292,6 +332,7 @@ def _build_live_runtime(config) -> dict:
         "config": config,
         "processor": processor,
         "notifier": notifier,
+        "describer": describer,
         "page": _live_html(config),
         "cameras_by_id": {camera.id: camera for camera in config.cameras},
     }
@@ -303,6 +344,7 @@ def _stopped_live_runtime(config) -> dict:
         "config": config,
         "processor": None,
         "notifier": None,
+        "describer": None,
         "page": _live_html(config),
         "cameras_by_id": {camera.id: camera for camera in config.cameras},
     }
@@ -351,6 +393,7 @@ def run_server(
             "config": config,
             "processor": None,
             "notifier": None,
+            "describer": None,
             "page": _enroll_html(config),
             "cameras_by_id": {camera.id: camera for camera in config.cameras},
         }
@@ -392,10 +435,13 @@ def run_server(
                 last_stamp = stamp
                 continue
             old_notifier = state.get("notifier")
+            old_describer = state.get("describer")
             with lock:
                 state.update(new_state)
             if old_notifier is not None:
                 old_notifier.close()
+            if old_describer is not None:
+                old_describer.close()
             last_stamp = stamp
             LOGGER.info(
                 "Hot reloaded config detector=%s path=%s",
@@ -516,10 +562,13 @@ def run_server(
                 if parsed.path == "/api/runtime/stop" and not enrollment_only:
                     with lock:
                         old_notifier = state.get("notifier")
+                        old_describer = state.get("describer")
                         current_config = state["config"]
                         state.update(_stopped_live_runtime(current_config))
                     if old_notifier is not None:
                         old_notifier.close()
+                    if old_describer is not None:
+                        old_describer.close()
                     LOGGER.info("Live runtime stopped by browser control")
                     self._json({
                         "status": "stopped",
@@ -571,4 +620,7 @@ def run_server(
         notifier = state.get("notifier")
         if notifier is not None:
             notifier.close()
+        describer = state.get("describer")
+        if describer is not None:
+            describer.close()
         server.server_close()

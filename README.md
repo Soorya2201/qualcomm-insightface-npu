@@ -50,7 +50,7 @@ hardware, a measurement on our own laptop, or a test on the physical board.
 | Embedding step vs. our previous model | **10.8 ms → 2.06 ms** (~5× faster) | CavaFace float vs. compiled InsightFace W8A16, both measured in-app |
 | Physical output | **Green → red on real Arduino Uno Q LEDs**, over an internet relay, from a systemd service that survives reboot | Verified on hardware |
 | Data leaving the laptop | **A verdict JSON only** — never an image | Server refuses non-localhost binds |
-| Automated tests | **32 passing** | `pytest` in `Qualcomm edge ml/` |
+| Automated tests | **60 passing** | `pytest` in `Qualcomm edge ml/` |
 
 ---
 
@@ -184,18 +184,33 @@ No cloud LLM is involved: the language model, the tool calls, and the hardware
 are all local. See [`uno-q-board/x_elite/client.py`](https://github.com/Saurabhkaran11/Qualcomm-ml-infra-hackathon/blob/main/x_elite/client.py)
 and the board project's `SNAPDRAGON_SETUP.md`, step 4.
 
-**2. Designed role in Access Vision: incident descriptions (roadmap).** The
+**2. Attribute description of unauthorized faces, in Access Vision.** The
 security decision stays deterministic — detection, embedding, and a cosine
 threshold. GenieX is added *around* it, not *in* it:
 
 ```text
-unauthorized event  →  one snapshot  →  local GenieX VLM  →  written incident description
+unauthorized event  →  wider crop of the same frame  →  local GenieX VLM
+    →  outfit color, glasses, hat  →  JSON event alongside the alert
 ```
 
-It runs only when an unauthorized event occurs, never on every frame, so a large
-generative model never competes with the real-time vision models for the NPU.
-This is designed and documented (`Qualcomm edge ml/possible_optimisations.txt`,
-item 7) but not yet implemented.
+`src/access_vision/vlm.py` calls Qwen2.5-VL-7B-Instruct (W4A16 — Qualcomm's
+own published AI Hub bundle for this model; there is no int8/w8a8 variant to
+ask for, and W4A16 is smaller and faster on the NPU than int8 would have been
+anyway) through GenieX's local OpenAI-compatible server, on a background
+thread, only when a face does not match the allow-list, rate-limited so a
+multi-second generation never competes with the detector and embedder for
+the NPU the way calling it per-frame would.
+
+Verified without the real device: the PNG encoder (byte-for-byte against a
+real decoder), the crop math, the request sent to GenieX's documented API,
+error handling for both an unreachable server and a malformed response, the
+response parser against ten deliberately messy plausible outputs, the
+async/trigger/cooldown/failure behavior of the worker thread, and the
+pipeline calling it once per person with the correct status — 28 new tests,
+all passing. **Not yet verified, because it needs the real Snapdragon**:
+whether `geniex serve` resolves the model identifier this module sends to
+the bundle `scripts/ensure_vlm_model.py` fetches — see that script's and
+vlm.py's own docstrings for the exact check to run once, on device.
 
 ---
 
@@ -439,7 +454,7 @@ We're explicit about what is and isn't proven:
 | Detector is a generic float model (83.5 ms) | Compile YOLOv5-Face through the same Workbench pipeline (Qualcomm publishes 4.65–14.57 ms depending on runtime and precision) |
 | Public relay allows 250 messages/day per IP | Switch to direct HTTP on the shared hotspot (no quota) or a paid tier |
 | Compiled context is specific to Snapdragon X Elite | Recompile per target SoC (one flag) |
-| GenieX incident descriptions | Designed; not yet implemented in Access Vision |
+| GenieX attribute descriptions: code written and unit-tested (28 tests), but the GenieX model-lookup link is unverified without the real device | Run `scripts/ensure_vlm_model.py`, then confirm per that script's own docstring |
 | Temporal tracking | Detect every few frames, track boxes between detections, re-identify every 0.5–1 s |
 
 ---
@@ -498,7 +513,7 @@ per second, public ntfy.sh's 250-message daily quota runs out in about 17 minute
 | How accurate is it? | The quantized model matches the float model's output (cosine 0.9985). End-to-end verification accuracy on real faces is our next measurement, and we've said so rather than guess |
 | Why not run it in the cloud? | Privacy, latency, cost, and offline operation — the whole decision happens on the laptop |
 | Why is the detector not quantized yet? | We measured first. The embedder was the model we could fully control; timings now show the detector is the bottleneck, and the pipeline to fix it is ready |
-| Where is GenieX? | Driving the hardware through an on-device LLM agent, and designed for incident descriptions. Face recognition runs on QNN because GenieX serves generative models, not CNNs |
+| Where is GenieX? | Driving the hardware through an on-device LLM agent, and describing unauthorized faces' outfit/glasses/hat (Qwen2.5-VL-7B, W4A16). Face recognition itself runs on QNN because GenieX serves generative models, not CNNs |
 | What if the network drops? | Recognition continues; board updates are queued and retried; the board clears stale lights after 25 s rather than showing a wrong green |
 
 ---

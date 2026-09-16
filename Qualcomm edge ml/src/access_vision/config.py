@@ -98,6 +98,28 @@ class BoardConfig:
 
 
 @dataclass(frozen=True)
+class VlmConfig:
+    """Optional GenieX vision-language description of unauthorized faces.
+
+    Disabled by default, same convention as BoardConfig: absent GenieX
+    tooling on this machine is not an error, it just means no descriptions.
+    See src/access_vision/vlm.py for why Qwen2.5-VL-7B-Instruct / w4a16, why
+    this triggers only on "unauthorized" rather than every frame, and what is
+    unit-tested here vs. what needs the real device to confirm.
+    """
+
+    enabled: bool = False
+    base_url: str = "http://127.0.0.1:18181/v1"  # GenieX's local OpenAI-compatible server
+    model: str = "Qwen2.5-VL-7B-Instruct"
+    trigger_on: str = "unauthorized"
+    crop_expand: float = 1.0     # fraction of the face box's own size added on every side
+    cooldown_seconds: float = 10.0
+    max_tokens: int = 64
+    timeout_seconds: float = 30.0
+    max_queue: int = 4
+
+
+@dataclass(frozen=True)
 class AppConfig:
     cameras: tuple[CameraConfig, ...]
     detector: DetectorConfig
@@ -108,6 +130,7 @@ class AppConfig:
     web: WebConfig
     processing: ProcessingConfig
     board: BoardConfig
+    vlm: VlmConfig
 
 
 def _resolve(base: Path, value: str) -> Path:
@@ -146,6 +169,13 @@ def load_config(path: str | Path) -> AppConfig:
     web = raw.get("web", {})
     processing = raw.get("processing", {})
     board = raw.get("board", {})
+    vlm = raw.get("vlm", {})
+    if str(vlm.get("trigger_on", "unauthorized")).lower() not in {"unauthorized", "allowed"}:
+        raise ValueError("vlm.trigger_on must be unauthorized or allowed")
+    if float(vlm.get("crop_expand", 1.0)) < 0:
+        raise ValueError("vlm.crop_expand must be >= 0")
+    if int(vlm.get("max_queue", 4)) < 1:
+        raise ValueError("vlm.max_queue must be at least 1")
     if str(board.get("transport", "http")).lower() not in {"http", "ntfy", "ssh"}:
         raise ValueError("board.transport must be http, ntfy, or ssh")
     if int(board.get("ntfy_budget_burst", 50)) < 1:
@@ -228,5 +258,16 @@ def load_config(path: str | Path) -> AppConfig:
             ntfy_budget_reserve=int(board.get("ntfy_budget_reserve", 10)),
             max_queue=int(board.get("max_queue", 100)),
             ntfy_quota_backoff_seconds=float(board.get("ntfy_quota_backoff_seconds", 600.0)),
+        ),
+        vlm=VlmConfig(
+            enabled=bool(vlm.get("enabled", False)),
+            base_url=str(vlm.get("base_url", "http://127.0.0.1:18181/v1")),
+            model=str(vlm.get("model", "Qwen2.5-VL-7B-Instruct")),
+            trigger_on=str(vlm.get("trigger_on", "unauthorized")).lower(),
+            crop_expand=float(vlm.get("crop_expand", 1.0)),
+            cooldown_seconds=float(vlm.get("cooldown_seconds", 10.0)),
+            max_tokens=int(vlm.get("max_tokens", 64)),
+            timeout_seconds=float(vlm.get("timeout_seconds", 30.0)),
+            max_queue=int(vlm.get("max_queue", 4)),
         ),
     )
