@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import os
 import tomllib
 
 
@@ -19,6 +20,7 @@ class CameraConfig:
 class DetectorConfig:
     path: Path
     model_id: str = "face_det_lite"
+    landmark_path: Path | None = None
     score_threshold: float = 0.55
     nms_iou_threshold: float = 0.30
 
@@ -76,6 +78,21 @@ class ProcessingConfig:
 
 
 @dataclass(frozen=True)
+class BoardConfig:
+    """Arduino Uno Q status light. Disabled by default; absent tooling is not an error."""
+
+    enabled: bool = False
+    transport: str = "http"          # "http" board listens; "ntfy" relay via internet; "ssh" legacy push
+    url: str = "http://SCL-UNOQ05.local:8770"
+    token: str = ""
+    ntfy_topic: str = ""             # long random string, not a guessable name
+    ntfy_base_url: str = "https://ntfy.sh"
+    scripts_dir: Path | None = None
+    heartbeat_seconds: float = 30.0
+    min_interval_seconds: float = 0.5
+
+
+@dataclass(frozen=True)
 class AppConfig:
     cameras: tuple[CameraConfig, ...]
     detector: DetectorConfig
@@ -85,6 +102,7 @@ class AppConfig:
     runtime: RuntimeConfig
     web: WebConfig
     processing: ProcessingConfig
+    board: BoardConfig
 
 
 def _resolve(base: Path, value: str) -> Path:
@@ -122,6 +140,9 @@ def load_config(path: str | Path) -> AppConfig:
     runtime = raw.get("runtime", {})
     web = raw.get("web", {})
     processing = raw.get("processing", {})
+    board = raw.get("board", {})
+    if str(board.get("transport", "http")).lower() not in {"http", "ntfy", "ssh"}:
+        raise ValueError("board.transport must be http, ntfy, or ssh")
     embedding_dimension = int(emb.get("embedding_dimension", 128))
     if embedding_dimension <= 0:
         raise ValueError("models.embedder.embedding_dimension must be positive")
@@ -145,6 +166,11 @@ def load_config(path: str | Path) -> AppConfig:
         detector=DetectorConfig(
             path=_resolve(config_path.parent, det["path"]),
             model_id=str(det.get("model_id", "face_det_lite")),
+            landmark_path=(
+                _resolve(config_path.parent, str(det["landmark_path"]))
+                if det.get("landmark_path")
+                else None
+            ),
             score_threshold=float(det.get("score_threshold", 0.55)),
             nms_iou_threshold=float(det.get("nms_iou_threshold", 0.30)),
         ),
@@ -170,4 +196,19 @@ def load_config(path: str | Path) -> AppConfig:
         runtime=RuntimeConfig(**runtime),
         web=WebConfig(**web),
         processing=ProcessingConfig(**processing),
+        board=BoardConfig(
+            enabled=bool(board.get("enabled", False)),
+            transport=str(board.get("transport", "http")).lower(),
+            url=str(board.get("url", "http://SCL-UNOQ05.local:8770")),
+            token=str(os.environ.get("VERDICT_TOKEN", board.get("token", ""))),
+            ntfy_topic=str(os.environ.get("NTFY_TOPIC", board.get("ntfy_topic", ""))),
+            ntfy_base_url=str(board.get("ntfy_base_url", "https://ntfy.sh")),
+            scripts_dir=(
+                _resolve(config_path.parent, str(board["scripts_dir"]))
+                if board.get("scripts_dir")
+                else None
+            ),
+            heartbeat_seconds=float(board.get("heartbeat_seconds", 30.0)),
+            min_interval_seconds=float(board.get("min_interval_seconds", 0.5)),
+        ),
     )

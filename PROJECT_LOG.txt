@@ -20,6 +20,8 @@ COMPLETED
 - Added local webcam capture and remote MJPEG/DroidCam support.
 - Added a localhost MJPEG proxy to avoid browser cross-origin restrictions.
 - Added YOLOv5-Face detection with boxes and five facial landmarks.
+- Switched the default detector to Qualcomm Lightweight-Face-Detection W8A8 and
+  use its built-in five-point landmark head for ArcFace alignment.
 - Added folder-based enrollment with multiple templates per identity.
 - Stopped averaging enrollment vectors; every accepted image is stored.
 - Added dimension validation for incompatible embedding databases.
@@ -66,8 +68,8 @@ CURRENT DEFAULT PIPELINE
 ------------------------
 
 camera frame
-  -> YOLOv5-Face on QNN/NPU
-  -> five facial landmarks
+  -> Qualcomm Lightweight-Face-Detection W8A8 on QNN/NPU
+  -> built-in five facial landmarks
   -> ArcFace alignment to 112x112
   -> BGR (x - 127.5) / 127.5
   -> InsightFace W600K R50 W8A16 QNN context

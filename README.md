@@ -14,7 +14,11 @@ The current adapters support:
 
 - [YOLOv5-Face](https://aihub.qualcomm.com/compute/models/yolov5_face)
   (`yolov5_face`), 640x640 RGB input, aspect-ratio-preserving letterboxing,
-  face boxes, and five facial landmarks. The current `config.toml` selects it.
+  face boxes, and five facial landmarks. This is retained as a fallback and
+  comparison baseline.
+- RetinaFace MobileNet 0.25 (`retinaface_yakhyo`), 640x640 BGR input with
+  aspect-ratio-preserving letterboxing, face boxes, and five facial landmarks.
+  The current `config.toml` selects the compiled QNN/NPU artifact.
 - [Lightweight-Face-Detection](https://aihub.qualcomm.com/compute/models/face_det_lite)
   (`face_det_lite`), retained as a legacy 480x640 grayscale adapter.
 - [MobileFaceNet](https://aihub.qualcomm.com/compute/models/mobile_facenet)
@@ -25,7 +29,7 @@ The current adapters support:
 - InsightFace `w600k_r50`/ArcFace (`insightface_w600k_r50`), using the
   Snapdragon X Elite W8A16 QNN context from
   [qualcomm-insightface-npu](https://github.com/Soorya2201/qualcomm-insightface-npu).
-  The default `config.toml` selects this model with YOLO five-point alignment,
+  The default `config.toml` selects this model with RetinaFace five-point alignment,
   112x112 BGR input, `(x - 127.5) / 127.5`, and a normalized 512-value output.
 - [DINOv3 ViT-S/16](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m)
   (`dinov3_vits16`), 224x224 ImageNet-normalized RGB input and a normalized
@@ -61,6 +65,83 @@ The included InsightFace-derived weights are restricted by the upstream model
 terms to non-commercial research use. The repository's pipeline code is MIT,
 but that does not relicense the model weights. Obtain appropriate permission or
 replace the weights before commercial deployment.
+
+### Quantized and compiled QNN model details
+
+The current live pipeline is pinned to compiled QNN artifacts for Snapdragon X
+Elite:
+
+| Stage | Config model ID | Precision / artifact | Path | Runtime |
+| --- | --- | --- | --- | --- |
+| Face detection | `retinaface_yakhyo` | Workbench-optimized QNN ONNX wrapper with external context | `models/compiled/retinaface_mv1_0.25_640/qnn/job_jpe7kol15_optimized_onnx/model.onnx` plus `model.bin` | `QNNExecutionProvider` on NPU |
+| Face embedding | `insightface_w600k_r50` | W8A16 compiled QNN context | `models/compiled/w600k_r50_qnn_x_elite/w600k_r50_qnn.onnx` plus `model.bin` | `QNNExecutionProvider` on NPU |
+
+RetinaFace artifact files:
+
+```text
+models/compiled/retinaface_mv1_0.25_640/
+  job_jpe7kol15_optimized_onnx_mq3x1zy9q.onnx.zip
+  qnn/job_jpe7kol15_optimized_onnx/
+    model.onnx   # tiny EPContext wrapper
+    model.bin    # compiled QNN context
+```
+
+InsightFace artifact files:
+
+```text
+models/compiled/w600k_r50_qnn_x_elite/
+  w600k_r50_qnn.onnx   # tiny EPContext wrapper
+  model.bin            # compiled QNN context
+```
+
+Both wrapper ONNX files are intentionally tiny because the compiled graph lives
+in the adjacent `model.bin`. Keep each wrapper beside its `model.bin`; the
+relative path is part of the artifact contract.
+
+The active runtime block is:
+
+```toml
+[runtime]
+provider = "QNNExecutionProvider"
+performance_mode = "burst"
+require_npu = true
+context_cache = false
+```
+
+`require_npu = true` is deliberate. Startup registers `onnxruntime-qnn`,
+discovers a QNN device whose hardware type is `NPU`, attaches that device to
+the sessions, and fails if QNN/NPU is unavailable. Small ONNX wrapper or I/O
+nodes may remain on CPU, but the neural-network partitions are assigned to QNN
+on the NPU, not GPU.
+
+Current RetinaFace preprocessing and postprocessing:
+
+- Input geometry: 640x640.
+- Source frames: RGB from browser RGBA bytes.
+- Resize: aspect-ratio-preserving letterbox with zero padding.
+- Model input: BGR float tensor using the model's detected NCHW/NHWC layout.
+- Output decode: RetinaFace priors for strides 8, 16, and 32.
+- Confidence threshold: `0.70`.
+- NMS IoU threshold: `0.40`.
+- Minimum live face size: `50` pixels.
+- Landmark output: five points used for ArcFace alignment.
+
+Current InsightFace preprocessing and matching:
+
+- Aligned crop: 112x112 from RetinaFace landmarks.
+- Channel order: BGR.
+- Normalization: image mean `[0.5, 0.5, 0.5]`, image std `[0.5, 0.5, 0.5]`,
+  equivalent to `(x - 127.5) / 127.5` after 0-1 scaling.
+- Output tensor: `output_0`.
+- Embedding dimension: 512.
+- Matching: L2-normalized cosine similarity against every stored template.
+- Database: `data/allowed_embeddings_insightface_w600k_r50.json`.
+- Starting cosine threshold: `0.36`; calibrate with local camera data.
+
+Embedding databases are model- and preprocessing-specific. Do not reuse
+CavaFace, MobileFaceNet, DINO, or older InsightFace databases after changing
+the detector landmarks, alignment, precision, channel order, normalization, or
+embedding model.
 
 ### DINOv3 ViT-S experiment
 
@@ -182,6 +263,17 @@ template count, and embedding dimension. Every five seconds, a performance log
 reports processed FPS plus average total, detector, and embedding latency for
 each camera. Use `--log-level DEBUG` to log every processed frame.
 
+When `[board]` is enabled, every send to the board logs at `INFO`, e.g.:
+
+    INFO Board updated: 2 people (1 authorized, 1 denied) [alice:authorized, unknown:unauthorized] -> published to https://ntfy.sh/your-topic
+
+This is deliberate: a working send is the one line that proves a verdict this
+device computed actually reached the board, so it must be visible at the
+default level, not only failures. An unreachable board logs once at `WARNING`
+when it first fails, then again at most once a minute while the outage
+continues, so a long outage stays visible rather than disappearing after the
+first line; `INFO Board reachable again` marks recovery.
+
 A dated summary of the models, pipeline, completed work, performance, and
 commands is maintained in [PROJECT_LOG.txt](PROJECT_LOG.txt). The remaining
 performance ideas are recorded in
@@ -223,3 +315,127 @@ python -m pytest -q
 ```
 
 Expected project version: `0.2.0`.
+
+## Status light and buzzer (Arduino Uno Q)
+
+Frames come in from the phone over MJPEG and are decoded in the browser; only a
+small JSON verdict leaves this laptop, and only to the Uno Q, which shows one
+LED per detected person and beeps once per refusal.
+
+```
+phone (MJPEG) ──► browser ──raw pixels──► localhost service ──► RetinaFace (NPU) ──► InsightFace (NPU)
+                                                                                      │
+                                                                             verdict JSON
+                                                                                      ▼
+                                                              BoardNotifier ──ssh──► Uno Q ──► Pixels + buzzer
+```
+
+The board tooling is vendored as a submodule, so clone with:
+
+```powershell
+git clone --recurse-submodules https://github.com/Soorya2201/qualcomm-insightface-npu
+```
+
+Enable it in the config:
+
+```toml
+[board]
+enabled = true
+scripts_dir = "../uno-q-board/scripts"
+heartbeat_seconds = 30.0
+min_interval_seconds = 0.5
+```
+
+### Why it is driven from `process()` and not from the alert sink
+
+`AlertPipeline.sink.emit()` fires only when a frame is UNAUTHORIZED, and only
+past `alert_cooldown_seconds`. It is an alert channel. The board is a state
+display: it needs green too, and it needs to clear when people leave. A board
+wired to the sink could only ever turn red. `BoardNotifier.update()` therefore
+consumes the return value of `process()` on every frame.
+
+### Why the send is asynchronous
+
+Reaching the board spawns an `ssh` process — TCP, key exchange, remote Python
+start — on the order of 300ms-1s. Frames arrive every `frame_interval_ms`
+(300ms) and inference is ~2ms. `update()` returns immediately and a worker
+thread owns the call, holding a **single slot**: while a send is in flight,
+newer states overwrite the pending one, so the board converges on the latest
+truth instead of replaying a stale queue. Measured: 20 frames across two
+distinct states cost 2 sends, and `update()` never blocks.
+
+Cut the per-call handshake by reusing one connection — add to `~/.ssh/config`:
+
+```
+Host SCL-UNOQ05.local
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 10m
+```
+
+### Failure policy
+
+The light is an indicator, not the security decision. If the board is
+unreachable the pipeline keeps running and logs the outage once, not once per
+frame. The board's firmware is fail-closed on its own side: unreadable input,
+bad JSON, a missing `status` and `"unknown"` all show red.
+
+### Before it can work
+
+Both are owned by whoever holds the board and cannot be fixed from this laptop:
+
+1. Your SSH **public** key installed on the board (`ssh-keygen -t ed25519`, send
+   the `.pub` line).
+2. Board and laptop on the same Wi-Fi, client isolation off, no VPN.
+
+Verify first:
+
+```powershell
+cd ..\uno-q-board
+$env:BOARD_TARGET="net"; python scripts/check_link.py; Remove-Item Env:\BOARD_TARGET
+```
+
+Expect `CONNECTED (over ssh (SCL-UNOQ05.local))`.
+
+## Preflight
+
+`config.toml` is gitignored, so the committed `config.insightface.toml` is the
+reference wiring for the compiled NPU model. Every value under
+`[models.embedder]` is part of the model's contract — a wrong one does not
+raise, it produces plausible embeddings that match the wrong people. Check it:
+
+```powershell
+python scripts/preflight_insightface.py --config config.insightface.toml
+```
+
+It also warns when the database filename does not name the embedder: CavaFace
+embeddings are **also** 512-d, so `AllowList`'s dimension guard cannot detect a
+stale database from a different model.
+
+## Watching live traffic in a terminal
+
+```powershell
+$env:NTFY_TOPIC="your-topic"
+python scripts\watch_verdicts.py
+```
+
+Prints every verdict as it flows through the relay, color-coded, e.g.:
+
+```
+[14:32:07] AUTHORIZED   1 detected: 1 authorized, 0 denied
+[14:32:11] UNAUTHORIZED 1 detected: 0 authorized, 1 denied
+[14:32:15] EMPTY        no people detected
+```
+
+This is a second, independent subscriber to the same public ntfy.sh topic
+`uno-q-listener/ntfy_poller.py` listens on -- it needs no access to the board
+at all and keeps working even if the board is off, since ntfy.sh broadcasts
+to every subscriber. It only watches; it never drives the lights.
+
+The printed decision is computed by importing `verdict()` from the
+`uno-q-board` submodule's `check_auth.py`, so what you see here is guaranteed
+to match the board's own decision, not a separate implementation that could
+drift from it. Requires the submodule (`git submodule update --init`).
+
+Verified against the live relay: sent authorized, unauthorized, and empty
+test messages and confirmed each printed correctly, color-coded, in real time.

@@ -17,6 +17,7 @@ class _DetectorSession:
     outputs = [
         _Tensor("heatmap", [1, 1, 2, 3]),
         _Tensor("bbox", [1, 4, 2, 3]),
+        _Tensor("landmark", [1, 10, 2, 3]),
     ]
 
     def run(self, _feeds):
@@ -24,7 +25,9 @@ class _DetectorSession:
         heatmap[0, 0, 0, 0] = 10.0
         heatmap[0, 0, 1, 2] = 10.0
         bbox = np.ones((1, 4, 2, 3), dtype=np.float32)
-        return [heatmap, bbox]
+        landmark = np.zeros((1, 10, 2, 3), dtype=np.float32)
+        landmark[0, :, 0, 0] = [0.1, 0.2, 0.8, 0.2, 0.45, 0.55, 0.2, 0.8, 0.7, 0.8]
+        return [heatmap, bbox, landmark]
 
 
 def test_detector_gathers_multiple_bounding_boxes_as_n_by_four():
@@ -35,6 +38,24 @@ def test_detector_gathers_multiple_bounding_boxes_as_n_by_four():
     faces = detector.detect(np.zeros((16, 24, 3), dtype=np.uint8))
     assert len(faces) == 2
     assert all(len(face.xyxy) == 4 for face in faces)
+    assert faces[-1].landmarks is not None
+    assert len(faces[-1].landmarks or ()) == 5
+
+
+def test_face_det_lite_landmarks_are_reordered_for_arcface():
+    detector = FaceDetector(
+        _DetectorSession(),
+        DetectorConfig(path=Path("unused.onnx"), score_threshold=0.5),
+    )
+    face = detector.detect(np.zeros((16, 24, 3), dtype=np.uint8))[-1]
+
+    assert face.landmarks == (
+        (6, 2),
+        (4, 4),
+        (2, 6),
+        (1, 2),
+        (6, 6),
+    )
 
 
 class _YoloDetectorSession:

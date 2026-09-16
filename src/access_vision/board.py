@@ -1,0 +1,268 @@
+"""Push authorization state to the Arduino Uno Q status light.
+
+Why this does not hook AlertPipeline.sink
+-----------------------------------------
+`sink.emit()` fires only when a frame is UNAUTHORIZED, and only after the alert
+cooldown. It is an alert channel. The board is a state display: it needs green
+too, and it needs to clear when people leave. Driving it from the sink would
+produce a light that can only ever turn red. So this consumes the return value
+of `process()` instead -- every frame, every status.
+
+Why the send happens on a worker thread
+---------------------------------------
+Reaching the board spawns an ssh process: TCP + key exchange + remote python
+startup, on the order of 300ms-1s. Frames arrive every `frame_interval_ms`
+(300ms by default) and inference itself is ~2ms. A synchronous send would stall
+the capture loop and queue up backlog. The worker holds a single slot: while a
+send is in flight, newer states overwrite the pending one, so the board always
+converges on the latest truth instead of replaying a stale queue.
+
+Failure policy
+--------------
+The light is an indicator, not the security decision. If the board is
+unreachable the recognition pipeline keeps running and logging; the outage is
+logged once, not once per frame. The board's own firmware is fail-closed
+(unknown input shows red), which is the correct direction for the display.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from typing import Any, Callable
+
+LOGGER = logging.getLogger(__name__)
+
+# Board shows 8 LEDs; sending more is harmless but pointless.
+MAX_PEOPLE = 8
+
+
+def to_board_payload(result: dict[str, Any]) -> dict[str, Any]:
+    """access_vision `process()` result -> the Uno Q contract.
+
+    The board reads `people[].status` and sorts LEDs by `box[0]`. Our bbox is
+    xyxy; the contract is [x, y, w, h].
+    """
+    people = []
+    for face in result.get("faces", []):
+        x1, y1, x2, y2 = face["bbox"]
+        person_id = face.get("person_id") or "unknown"
+        # send_to_board.send() rejects payloads containing a single quote,
+        # because it embeds the JSON in a remote shell heredoc.
+        person_id = str(person_id).replace("'", "")
+        people.append({
+            "id": person_id,
+            "status": "authorized" if face.get("allowed") else "unauthorized",
+            "box": [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
+            "confidence": float(face.get("cosine_similarity", 0.0)),
+        })
+    people.sort(key=lambda p: p["box"][0])
+    return {"people": people[:MAX_PEOPLE]}
+
+
+def state_key(payload: dict[str, Any]) -> tuple:
+    """Compact identity/verdict key used by tests and logs."""
+    return tuple((p["id"], p["status"]) for p in payload["people"])
+
+
+def _describe_payload(payload: dict[str, Any]) -> str:
+    """Human-readable summary of what is being sent, for the INFO-level log line."""
+    people = payload.get("people", [])
+    if not people:
+        return "no people (lights cleared)"
+    authorized = sum(1 for p in people if p.get("status") == "authorized")
+    denied = len(people) - authorized
+    ids = ", ".join(f"{p.get('id', '?')}:{p.get('status', '?')}" for p in people)
+    return f"{len(people)} people ({authorized} authorized, {denied} denied) [{ids}]"
+
+
+class BoardNotifier:
+    """Non-blocking bridge from the pipeline to the status light."""
+
+    def __init__(
+        self,
+        sender: Callable[[dict], str],
+        heartbeat_seconds: float = 30.0,
+        min_interval_seconds: float = 0.5,
+    ) -> None:
+        self._sender = sender
+        self._heartbeat = heartbeat_seconds
+        self._min_interval = min_interval_seconds
+
+        self._pending: dict | None = None
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+
+        self._last_sent = 0.0
+        self._failing = False
+        self._last_failure_logged = 0.0
+
+        self._thread = threading.Thread(target=self._run, name="board-notifier", daemon=True)
+        self._thread.start()
+
+    def update(self, result: dict[str, Any]) -> None:
+        """Call with every `process()` result. Returns immediately."""
+        if result.get("status") == "no_face":
+            payload = {"people": []}
+        else:
+            payload = to_board_payload(result)
+        with self._lock:
+            # Single slot: a newer state replaces an unsent older one.
+            self._pending = payload
+        self._wake.set()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._wake.wait(timeout=1.0)
+            self._wake.clear()
+            with self._lock:
+                payload = self._pending
+                self._pending = None
+            if payload is None:
+                continue
+
+            # Send the latest state at a predictable cadence. Repeated identical
+            # states are intentional: the board listener is a live state display,
+            # and the operator should see proof that the relay is still flowing.
+            since = time.monotonic() - self._last_sent
+            if since < self._min_interval:
+                time.sleep(self._min_interval - since)
+
+            try:
+                summary = self._sender(payload)
+            except Exception as exc:  # noqa: BLE001 - a dead light must not stop recognition
+                now_monotonic = time.monotonic()
+                if not self._failing:
+                    LOGGER.warning(
+                        "Board send FAILED (%s): %s -- continuing without it",
+                        _describe_payload(payload), exc,
+                    )
+                    self._failing = True
+                    self._last_failure_logged = now_monotonic
+                elif now_monotonic - self._last_failure_logged >= 60.0:
+                    # A send that has been failing for minutes must stay visible,
+                    # not vanish after the one log line at onset.
+                    LOGGER.warning("Board still unreachable (%s): %s", _describe_payload(payload), exc)
+                    self._last_failure_logged = now_monotonic
+                continue
+
+            if self._failing:
+                LOGGER.info("Board reachable again")
+                self._failing = False
+            self._last_sent = time.monotonic()
+            # INFO, not DEBUG: this is the one line that proves a verdict this
+            # device computed actually reached the board. At the default log
+            # level a working send must be visible, not just a broken one.
+            LOGGER.info("Board updated: %s -> %s", _describe_payload(payload), summary)
+
+    def close(self, timeout: float = 2.0) -> None:
+        self._stop.set()
+        self._wake.set()
+        self._thread.join(timeout=timeout)
+
+
+class HttpBoardSender:
+    """POST verdicts straight to the Uno Q's own listener.
+
+    The board runs verdict_server.py, joins Wi-Fi itself, and drives its own
+    lights. Nothing sits in between -- no ssh session, no laptop holding a USB
+    cable. One short-lived HTTP request per state change.
+    """
+
+    def __init__(self, url: str, token: str = "", timeout: float = 4.0) -> None:
+        self.url = url.rstrip("/")
+        self.token = token
+        self.timeout = timeout
+
+    def __call__(self, payload: dict) -> str:
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        body = _json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.url}/verdict",
+            data=body,
+            headers={"Content-Type": "application/json", **(
+                {"X-Verdict-Token": self.token} if self.token else {}
+            )},
+            method="POST",
+        )
+        try:
+            # No proxy: the board is a LAN/mDNS address and machine-wide proxies
+            # routinely cannot route private addresses.
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(request, timeout=self.timeout) as response:
+                answer = _json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                raise RuntimeError("board rejected the token (check VERDICT_TOKEN)") from exc
+            raise RuntimeError(f"board returned HTTP {exc.code}") from exc
+        return answer.get("summary", "ok")
+
+    def health(self) -> dict:
+        import json as _json
+        import urllib.request
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"{self.url}/health", timeout=self.timeout) as response:
+            return _json.loads(response.read().decode("utf-8"))
+
+
+def build_http_notifier(url: str, token: str = "", **kwargs) -> BoardNotifier:
+    """Notifier that talks to the board's own listener over HTTP."""
+    return BoardNotifier(sender=HttpBoardSender(url, token), **kwargs)
+
+
+class NtfyBoardSender:
+    """Publish verdicts to a public ntfy.sh topic instead of reaching the board directly.
+
+    Sidesteps client isolation and NAT entirely: this laptop and the board each
+    make an OUTBOUND https connection to ntfy.sh and never try to reach each
+    other. This is the fallback for a venue network (hotel/motel/conference)
+    that blocks device-to-device traffic but allows internet access.
+
+    The topic name is the only access control ntfy.sh's free tier offers.
+    Anyone who knows it can read or write it, so use a long random topic, not
+    a guessable one, for anything beyond a demo.
+    """
+
+    def __init__(self, topic: str, base_url: str = "https://ntfy.sh", timeout: float = 5.0) -> None:
+        self.url = f"{base_url.rstrip('/')}/{topic}"
+        self.timeout = timeout
+
+    def __call__(self, payload: dict) -> str:
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        body = _json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            self.url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=self.timeout) as response:
+                response.read()
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"ntfy publish failed: {exc}") from exc
+        return f"published to {self.url}"
+
+
+def build_ntfy_notifier(topic: str, base_url: str = "https://ntfy.sh", **kwargs) -> BoardNotifier:
+    """Notifier that relays through ntfy.sh instead of reaching the board directly."""
+    return BoardNotifier(sender=NtfyBoardSender(topic, base_url=base_url), **kwargs)
+
+
+def build_notifier(scripts_dir: str | None = None, **kwargs) -> BoardNotifier | None:
+    """Wire up send_to_board.send, or return None if the board tooling is absent."""
+    import sys
+    if scripts_dir and scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    try:
+        from send_to_board import send  # type: ignore
+    except ImportError:
+        LOGGER.info("send_to_board not importable; board output disabled")
+        return None
+    return BoardNotifier(sender=send, **kwargs)

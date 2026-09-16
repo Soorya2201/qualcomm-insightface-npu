@@ -62,7 +62,9 @@ class AllowList:
         return cls(names, np.asarray(embeddings), threshold)
 
     def match(self, embedding: np.ndarray) -> Match:
-        vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        # np.asarray can return the caller's own buffer; the in-place divide
+        # below would then mutate a stored template or a cached embedding.
+        vector = np.array(embedding, dtype=np.float32).reshape(-1)
         expected_dimension = self.embeddings.shape[1]
         if vector.size != expected_dimension:
             raise ValueError(

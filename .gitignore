@@ -15,6 +15,10 @@ diagnostics/
 qai_hub/
 repo_setup_download*.zip
 repo_setup_staging*/
+external/
+tools/
+remote_insightface_push_*/
+snapdragon_access_vision_commit.zip
 
 # ONNX Runtime/QNN generated contexts.
 *.onnx

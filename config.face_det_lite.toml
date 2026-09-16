@@ -1,0 +1,60 @@
+[[cameras]]
+id = "camera-1"
+source = "webcam"
+
+[[cameras]]
+id = "camera-2"
+source = "mjpeg"
+url = "http://10.36.254.185:4747/video"
+
+[web]
+host = "127.0.0.1"
+port = 8765
+frame_width = 640
+frame_height = 480
+frame_interval_ms = 25.0
+open_browser = true
+
+[models.detector]
+model_id = "face_det_lite"
+path = "models/face_det_lite-onnx-w8a8/face_det_lite-onnx-w8a8/face_det_lite.onnx"
+score_threshold = 0.50
+nms_iou_threshold = 0.50
+
+[models.embedder]
+model_id = "insightface_w600k_r50"
+path = "models/compiled/w600k_r50_qnn_x_elite/w600k_r50_qnn.onnx"
+embedding_dimension = 512
+input_width = 112
+input_height = 112
+output_name = "output_0"
+image_mean = [0.5, 0.5, 0.5]
+image_std = [0.5, 0.5, 0.5]
+channel_order = "bgr"
+align_landmarks = true
+
+[database]
+embeddings_path = "data/allowed_embeddings_insightface_w600k_r50.json"
+cosine_threshold = 0.36
+
+[enrollment]
+minimum_images_per_person = 3
+
+[runtime]
+provider = "QNNExecutionProvider"
+backend_path = "auto"
+performance_mode = "burst"
+require_npu = true
+context_cache = false
+
+[processing]
+alert_cooldown_seconds = 5.0
+decision_mode = "any_allowed"
+min_face_size = 50
+log_interval_seconds = 5.0
+
+[board]
+enabled = false
+scripts_dir = "uno-q-board/scripts"
+heartbeat_seconds = 30.0
+min_interval_seconds = 0.5
