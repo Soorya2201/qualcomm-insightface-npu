@@ -279,15 +279,28 @@ consumes the return value of `process()` on every frame.
 
 ### Why the send is asynchronous
 
-Reaching the board spawns an `ssh` process — TCP, key exchange, remote Python
-start — on the order of 300ms-1s. Frames arrive every `frame_interval_ms`
-(300ms) and inference is ~2ms. `update()` returns immediately and a worker
-thread owns the call, holding a **single slot**: while a send is in flight,
-newer states overwrite the pending one, so the board converges on the latest
-truth instead of replaying a stale queue. Measured: 20 frames across two
-distinct states cost 2 sends, and `update()` never blocks.
+A send is a network round-trip — hundreds of milliseconds over the relay, up
+to a second over `ssh` — while inference takes a few milliseconds.
+`update()` only records state and returns; a worker thread owns the network.
 
-Cut the per-call handshake by reusing one connection — add to `~/.ssh/config`:
+It sends two kinds of message:
+
+- **Changes** — someone appears, leaves, or flips authorized/unauthorized.
+  Changes are queued and delivered **in order**, ahead of heartbeats, and a
+  failed change is put back and retried rather than dropped. This is what
+  carries the red light and the beep. The queue is bounded (`max_queue`); if the
+  board falls that far behind, the oldest pending change is dropped with a
+  warning rather than replaying minutes-old states.
+- **Heartbeats** — the current state, re-sent at most every
+  `min_interval_seconds` while frames keep arriving, as live proof the relay is
+  flowing. When frames stop, heartbeats stop.
+
+With `transport = "ntfy"` a send budget mirrors ntfy.sh's request-rate limit and
+the relay's daily quota is detected explicitly; see
+[ARDUINO_RELAY_TROUBLESHOOTING.md](ARDUINO_RELAY_TROUBLESHOOTING.md).
+
+For the legacy `ssh` transport, cut the per-call handshake by reusing one
+connection — add to `~/.ssh/config`:
 
 ```
 Host SCL-UNOQ05.local
@@ -299,8 +312,9 @@ Host SCL-UNOQ05.local
 ### Failure policy
 
 The light is an indicator, not the security decision. If the board is
-unreachable the pipeline keeps running and logs the outage once, not once per
-frame. The board's firmware is fail-closed on its own side: unreadable input,
+unreachable the pipeline keeps running; the outage is logged at WARNING when it
+starts and at most once a minute while it continues, and an exhausted relay
+quota is logged once at ERROR. The board's firmware is fail-closed on its own side: unreadable input,
 bad JSON, a missing `status` and `"unknown"` all show red.
 
 ### Before it can work
