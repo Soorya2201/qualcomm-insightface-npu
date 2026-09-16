@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Upstream InsightFace downloads - reproducible via scripts, 275MB+
+models/onnx/
+# Derived artifacts - regenerate with scripts/01 and scripts/02
+models/prepared/
+# Compiled QNN artifacts are SoC-specific; regenerate with scripts/03
+models/compiled/
+# Calibration faces are usually private data - never commit them
+calib/*
+!calib/.gitkeep
+embeddings.npz
