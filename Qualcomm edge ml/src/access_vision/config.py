@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import os
 import tomllib
 
 
@@ -79,6 +80,9 @@ class ProcessingConfig:
 class BoardConfig:
     """Arduino Uno Q status light. Disabled by default; absent tooling is not an error."""
     enabled: bool = False
+    transport: str = "http"          # "http" = board listens itself; "ssh" = legacy push
+    url: str = "http://SCL-UNOQ05.local:8770"
+    token: str = ""
     scripts_dir: Path | None = None
     heartbeat_seconds: float = 30.0
     min_interval_seconds: float = 0.5
@@ -133,6 +137,8 @@ def load_config(path: str | Path) -> AppConfig:
     web = raw.get("web", {})
     processing = raw.get("processing", {})
     board = raw.get("board", {})
+    if str(board.get("transport", "http")).lower() not in {"http", "ssh"}:
+        raise ValueError("board.transport must be http or ssh")
     embedding_dimension = int(emb.get("embedding_dimension", 128))
     if embedding_dimension <= 0:
         raise ValueError("models.embedder.embedding_dimension must be positive")
@@ -183,6 +189,10 @@ def load_config(path: str | Path) -> AppConfig:
         processing=ProcessingConfig(**processing),
         board=BoardConfig(
             enabled=bool(board.get("enabled", False)),
+            transport=str(board.get("transport", "http")).lower(),
+            url=str(board.get("url", "http://SCL-UNOQ05.local:8770")),
+            # Prefer the environment so a shared secret stays out of the repo.
+            token=str(os.environ.get("VERDICT_TOKEN", board.get("token", ""))),
             scripts_dir=(
                 _resolve(config_path.parent, str(board["scripts_dir"]))
                 if board.get("scripts_dir")

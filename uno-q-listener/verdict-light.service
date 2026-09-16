@@ -1,0 +1,29 @@
+# Autostart the verdict listener on the Uno Q's Linux side, so the board is
+# self-sufficient: power it from any USB charger, it joins Wi-Fi and listens.
+# No host machine, no cable to a laptop, no ssh session.
+#
+# Install as a user service (no root needed):
+#   mkdir -p ~/.config/systemd/user
+#   cp verdict-light.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now verdict-light
+#   loginctl enable-linger arduino      # keep running with nobody logged in
+[Unit]
+Description=Uno Q verdict listener (access-control status light)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/arduino/rpc
+Environment=MSGPACK_PUREPYTHON=1
+Environment=VERDICT_PORT=8770
+Environment=VERDICT_STALE_SECONDS=20
+# Set a real shared secret and use the same value on the sender.
+Environment=VERDICT_TOKEN=CHANGE_ME
+ExecStart=/usr/bin/python3 /home/arduino/rpc/verdict_server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

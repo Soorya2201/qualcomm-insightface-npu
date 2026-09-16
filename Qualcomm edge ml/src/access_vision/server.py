@@ -11,7 +11,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 import numpy as np
 
-from .board import build_notifier
+from .board import build_http_notifier, build_notifier
 from .matching import AllowList
 from .pipeline import FrameProcessor
 from .runtime import QnnSession
@@ -258,11 +258,20 @@ def run_server(config, enrollment_only: bool) -> None:
     # a board wired to it could never show green or clear when people leave.
     notifier = None
     if processor is not None and config.board.enabled:
-        notifier = build_notifier(
-            scripts_dir=str(config.board.scripts_dir) if config.board.scripts_dir else None,
-            heartbeat_seconds=config.board.heartbeat_seconds,
-            min_interval_seconds=config.board.min_interval_seconds,
-        )
+        if config.board.transport == "http":
+            # The board runs verdict_server.py and drives its own lights.
+            notifier = build_http_notifier(
+                config.board.url,
+                config.board.token,
+                heartbeat_seconds=config.board.heartbeat_seconds,
+                min_interval_seconds=config.board.min_interval_seconds,
+            )
+        else:
+            notifier = build_notifier(
+                scripts_dir=str(config.board.scripts_dir) if config.board.scripts_dir else None,
+                heartbeat_seconds=config.board.heartbeat_seconds,
+                min_interval_seconds=config.board.min_interval_seconds,
+            )
         LOGGER.info(
             "Board output %s", "enabled" if notifier else "unavailable (send_to_board not importable)"
         )

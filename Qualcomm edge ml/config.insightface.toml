@@ -66,9 +66,20 @@ decision_mode = "any_allowed"
 min_face_size = 50           # below ~50px an upscaled crop is mostly interpolation
 
 [board]
-# Arduino Uno Q status light + buzzer. Reached over ssh via mDNS; see the
-# uno-q-board submodule. Disabled automatically if that tooling is absent.
+# Arduino Uno Q status light + buzzer.
+#
+# transport = "http": the board runs uno-q-listener/verdict_server.py, joins
+# Wi-Fi itself and drives its own lights. Nothing sits in between -- no laptop
+# holding a USB cable, no ssh session. This is the self-sufficient setup.
+#
+# transport = "ssh": legacy push through the uno-q-board submodule's
+# send_to_board.py, for when the board is a peripheral of some host machine.
 enabled = true
+transport = "http"
+url = "http://SCL-UNOQ05.local:8770"
+# Leave token empty here and export VERDICT_TOKEN instead; the env var wins,
+# which keeps the shared secret out of the repository.
+token = ""
 scripts_dir = "../uno-q-board/scripts"
 heartbeat_seconds = 30.0
 min_interval_seconds = 0.5

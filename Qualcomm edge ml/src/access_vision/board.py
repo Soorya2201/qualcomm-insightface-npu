@@ -158,6 +158,59 @@ class BoardNotifier:
         self._thread.join(timeout=timeout)
 
 
+class HttpBoardSender:
+    """POST verdicts straight to the Uno Q's own listener.
+
+    The board runs verdict_server.py, joins Wi-Fi itself, and drives its own
+    lights. Nothing sits in between -- no ssh session, no laptop holding a USB
+    cable. One short-lived HTTP request per state change.
+    """
+
+    def __init__(self, url: str, token: str = "", timeout: float = 4.0) -> None:
+        self.url = url.rstrip("/")
+        self.token = token
+        self.timeout = timeout
+
+    def __call__(self, payload: dict) -> str:
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        body = _json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.url}/verdict",
+            data=body,
+            headers={"Content-Type": "application/json", **(
+                {"X-Verdict-Token": self.token} if self.token else {}
+            )},
+            method="POST",
+        )
+        try:
+            # No proxy: the board is a LAN/mDNS address and machine-wide proxies
+            # routinely cannot route private addresses.
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(request, timeout=self.timeout) as response:
+                answer = _json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                raise RuntimeError("board rejected the token (check VERDICT_TOKEN)") from exc
+            raise RuntimeError(f"board returned HTTP {exc.code}") from exc
+        return answer.get("summary", "ok")
+
+    def health(self) -> dict:
+        import json as _json
+        import urllib.request
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"{self.url}/health", timeout=self.timeout) as response:
+            return _json.loads(response.read().decode("utf-8"))
+
+
+def build_http_notifier(url: str, token: str = "", **kwargs) -> BoardNotifier:
+    """Notifier that talks to the board's own listener over HTTP."""
+    return BoardNotifier(sender=HttpBoardSender(url, token), **kwargs)
+
+
 def build_notifier(scripts_dir: str | None = None, **kwargs) -> BoardNotifier | None:
     """Wire up send_to_board.send, or return None if the board tooling is absent."""
     import sys
