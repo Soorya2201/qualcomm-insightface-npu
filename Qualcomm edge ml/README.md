@@ -223,3 +223,99 @@ python -m pytest -q
 ```
 
 Expected project version: `0.2.0`.
+
+## Status light and buzzer (Arduino Uno Q)
+
+Frames come in from the phone over MJPEG and are decoded in the browser; only a
+small JSON verdict leaves this laptop, and only to the Uno Q, which shows one
+LED per detected person and beeps once per refusal.
+
+```
+phone (MJPEG) ──► browser ──raw pixels──► localhost service ──► YOLOv5-Face ──► InsightFace (NPU)
+                                                                                      │
+                                                                             verdict JSON
+                                                                                      ▼
+                                                              BoardNotifier ──ssh──► Uno Q ──► Pixels + buzzer
+```
+
+The board tooling is vendored as a submodule, so clone with:
+
+```powershell
+git clone --recurse-submodules https://github.com/Soorya2201/qualcomm-insightface-npu
+```
+
+Enable it in the config:
+
+```toml
+[board]
+enabled = true
+scripts_dir = "../uno-q-board/scripts"
+heartbeat_seconds = 30.0
+min_interval_seconds = 0.5
+```
+
+### Why it is driven from `process()` and not from the alert sink
+
+`AlertPipeline.sink.emit()` fires only when a frame is UNAUTHORIZED, and only
+past `alert_cooldown_seconds`. It is an alert channel. The board is a state
+display: it needs green too, and it needs to clear when people leave. A board
+wired to the sink could only ever turn red. `BoardNotifier.update()` therefore
+consumes the return value of `process()` on every frame.
+
+### Why the send is asynchronous
+
+Reaching the board spawns an `ssh` process — TCP, key exchange, remote Python
+start — on the order of 300ms-1s. Frames arrive every `frame_interval_ms`
+(300ms) and inference is ~2ms. `update()` returns immediately and a worker
+thread owns the call, holding a **single slot**: while a send is in flight,
+newer states overwrite the pending one, so the board converges on the latest
+truth instead of replaying a stale queue. Measured: 20 frames across two
+distinct states cost 2 sends, and `update()` never blocks.
+
+Cut the per-call handshake by reusing one connection — add to `~/.ssh/config`:
+
+```
+Host SCL-UNOQ05.local
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 10m
+```
+
+### Failure policy
+
+The light is an indicator, not the security decision. If the board is
+unreachable the pipeline keeps running and logs the outage once, not once per
+frame. The board's firmware is fail-closed on its own side: unreadable input,
+bad JSON, a missing `status` and `"unknown"` all show red.
+
+### Before it can work
+
+Both are owned by whoever holds the board and cannot be fixed from this laptop:
+
+1. Your SSH **public** key installed on the board (`ssh-keygen -t ed25519`, send
+   the `.pub` line).
+2. Board and laptop on the same Wi-Fi, client isolation off, no VPN.
+
+Verify first:
+
+```powershell
+cd ..\uno-q-board
+$env:BOARD_TARGET="net"; python scripts/check_link.py; Remove-Item Env:\BOARD_TARGET
+```
+
+Expect `CONNECTED (over ssh (SCL-UNOQ05.local))`.
+
+## Preflight
+
+`config.toml` is gitignored, so the committed `config.insightface.toml` is the
+reference wiring for the compiled NPU model. Every value under
+`[models.embedder]` is part of the model's contract — a wrong one does not
+raise, it produces plausible embeddings that match the wrong people. Check it:
+
+```powershell
+python scripts/preflight_insightface.py --config config.insightface.toml
+```
+
+It also warns when the database filename does not name the embedder: CavaFace
+embeddings are **also** 512-d, so `AllowList`'s dimension guard cannot detect a
+stale database from a different model.

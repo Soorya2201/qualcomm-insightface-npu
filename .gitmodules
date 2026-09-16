@@ -1,0 +1,3 @@
+[submodule "uno-q-board"]
+	path = uno-q-board
+	url = https://github.com/Saurabhkaran11/Qualcomm-ml-infra-hackathon.git

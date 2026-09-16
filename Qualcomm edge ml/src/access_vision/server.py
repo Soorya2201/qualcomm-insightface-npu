@@ -11,6 +11,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 import numpy as np
 
+from .board import build_notifier
 from .matching import AllowList
 from .pipeline import FrameProcessor
 from .runtime import QnnSession
@@ -252,6 +253,19 @@ def run_server(config, enrollment_only: bool) -> None:
     processor = None if enrollment_only else FrameProcessor(
         config, detector, embedder, allow_list
     )
+    # The status light is driven from every process() result, not from the alert
+    # sink: sink.emit() fires only on UNAUTHORIZED and only past the cooldown, so
+    # a board wired to it could never show green or clear when people leave.
+    notifier = None
+    if processor is not None and config.board.enabled:
+        notifier = build_notifier(
+            scripts_dir=str(config.board.scripts_dir) if config.board.scripts_dir else None,
+            heartbeat_seconds=config.board.heartbeat_seconds,
+            min_interval_seconds=config.board.min_interval_seconds,
+        )
+        LOGGER.info(
+            "Board output %s", "enabled" if notifier else "unavailable (send_to_board not importable)"
+        )
     page = _enroll_html(config) if enrollment_only else _live_html(config)
     cameras_by_id = {camera.id: camera for camera in config.cameras}
     # Camera endpoints are LAN addresses. Do not send them through machine-wide
@@ -338,7 +352,10 @@ def run_server(config, enrollment_only: bool) -> None:
                 with lock:
                     if parsed.path == "/api/frame" and processor is not None:
                         frame = _decode_rgba(body, int(query["width"][0]), int(query["height"][0]))
-                        self._json(processor.process(query["camera"][0], frame))
+                        result = processor.process(query["camera"][0], frame)
+                        if notifier is not None:
+                            notifier.update(result)  # non-blocking; worker owns the ssh call
+                        self._json(result)
                     elif parsed.path == "/api/enroll/reset" and enrollment is not None:
                         self._json(enrollment.reset())
                     elif parsed.path == "/api/enroll/frame" and enrollment is not None:

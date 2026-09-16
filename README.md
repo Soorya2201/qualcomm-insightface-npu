@@ -199,3 +199,16 @@ real face pairs.
 Pipeline code here is MIT. The InsightFace models it derives from are released
 by deepinsight for **non-commercial research use** — that license governs the
 compiled artifact too. See https://github.com/deepinsight/insightface .
+
+## Downstream application
+
+`Qualcomm edge ml/` holds Snapdragon Access Vision, which consumes this
+compiled model: YOLOv5-Face detection, five-point ArcFace alignment, the
+`w600k_r50` embedding on the NPU, and cosine matching against a local
+allow-list. Phone frames arrive over MJPEG; a JSON verdict is pushed to an
+Arduino Uno Q that shows one LED per person and beeps on refusal.
+
+The Uno Q firmware and link tooling live in the `uno-q-board` submodule
+([Saurabhkaran11/Qualcomm-ml-infra-hackathon](https://github.com/Saurabhkaran11/Qualcomm-ml-infra-hackathon)),
+referenced rather than copied — that project carries no license grant, so its
+code is not redistributed here. Clone with `--recurse-submodules`.

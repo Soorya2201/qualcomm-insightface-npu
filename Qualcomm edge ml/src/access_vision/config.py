@@ -76,6 +76,15 @@ class ProcessingConfig:
 
 
 @dataclass(frozen=True)
+class BoardConfig:
+    """Arduino Uno Q status light. Disabled by default; absent tooling is not an error."""
+    enabled: bool = False
+    scripts_dir: Path | None = None
+    heartbeat_seconds: float = 30.0
+    min_interval_seconds: float = 0.5
+
+
+@dataclass(frozen=True)
 class AppConfig:
     cameras: tuple[CameraConfig, ...]
     detector: DetectorConfig
@@ -85,6 +94,7 @@ class AppConfig:
     runtime: RuntimeConfig
     web: WebConfig
     processing: ProcessingConfig
+    board: BoardConfig
 
 
 def _resolve(base: Path, value: str) -> Path:
@@ -122,6 +132,7 @@ def load_config(path: str | Path) -> AppConfig:
     runtime = raw.get("runtime", {})
     web = raw.get("web", {})
     processing = raw.get("processing", {})
+    board = raw.get("board", {})
     embedding_dimension = int(emb.get("embedding_dimension", 128))
     if embedding_dimension <= 0:
         raise ValueError("models.embedder.embedding_dimension must be positive")
@@ -170,4 +181,14 @@ def load_config(path: str | Path) -> AppConfig:
         runtime=RuntimeConfig(**runtime),
         web=WebConfig(**web),
         processing=ProcessingConfig(**processing),
+        board=BoardConfig(
+            enabled=bool(board.get("enabled", False)),
+            scripts_dir=(
+                _resolve(config_path.parent, str(board["scripts_dir"]))
+                if board.get("scripts_dir")
+                else None
+            ),
+            heartbeat_seconds=float(board.get("heartbeat_seconds", 30.0)),
+            min_interval_seconds=float(board.get("min_interval_seconds", 0.5)),
+        ),
     )
