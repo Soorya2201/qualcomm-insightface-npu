@@ -13,7 +13,7 @@ def main() -> None:
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     args = parser.parse_args()
     logging.basicConfig(level=args.log_level, format="%(asctime)s %(levelname)s %(message)s")
-    run_server(load_config(args.config), enrollment_only=False)
+    run_server(load_config(args.config), enrollment_only=False, config_path=args.config)
 
 
 if __name__ == "__main__":

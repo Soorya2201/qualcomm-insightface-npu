@@ -68,6 +68,12 @@ def _nchw(array: np.ndarray, channels: int) -> np.ndarray:
     raise ValueError(f"Cannot find {channels} channels in output {array.shape}")
 
 
+def _optional_nchw(array: np.ndarray | None, channels: int) -> np.ndarray | None:
+    if array is None:
+        return None
+    return _nchw(array, channels)
+
+
 def _sigmoid(values: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.clip(values, -80.0, 80.0)))
 
@@ -96,17 +102,98 @@ def nms(boxes: np.ndarray, scores: np.ndarray, threshold: float) -> list[int]:
     return keep
 
 
+def _resize_pad_rgb(
+    frame_rgb: np.ndarray, width: int, height: int, pad_value: int = 0
+) -> tuple[np.ndarray, float, int, int]:
+    original_h, original_w = frame_rgb.shape[:2]
+    scale = min(width / original_w, height / original_h)
+    resized_w = max(1, min(width, round(original_w * scale)))
+    resized_h = max(1, min(height, round(original_h * scale)))
+    pad_left = (width - resized_w) // 2
+    pad_top = (height - resized_h) // 2
+    canvas = np.full((height, width, 3), pad_value, dtype=np.uint8)
+    canvas[pad_top : pad_top + resized_h, pad_left : pad_left + resized_w] = resize_image(
+        frame_rgb, resized_w, resized_h
+    )
+    return canvas, scale, pad_left, pad_top
+
+
+def _mediapipe_face_anchors() -> np.ndarray:
+    """Generate BlazeFace back-model anchors used by Qualcomm MediaPipe-Face."""
+    anchors: list[tuple[float, float, float, float]] = []
+    for stride, anchors_per_cell in ((16, 2), (32, 6)):
+        grid = 256 // stride
+        for y in range(grid):
+            for x in range(grid):
+                cx = (x + 0.5) / grid
+                cy = (y + 0.5) / grid
+                for _ in range(anchors_per_cell):
+                    anchors.append((cx, cy, 1.0, 1.0))
+    return np.asarray(anchors, dtype=np.float32).reshape(-1, 2, 2)
+
+
+MEDIAPIPE_FACE_ANCHORS = _mediapipe_face_anchors()
+
+
+def _retinaface_priors(width: int, height: int) -> np.ndarray:
+    anchors: list[tuple[float, float, float, float]] = []
+    for step, min_sizes in zip((8, 16, 32), ((16, 32), (64, 128), (256, 512))):
+        feature_h = int(np.ceil(height / step))
+        feature_w = int(np.ceil(width / step))
+        for y in range(feature_h):
+            for x in range(feature_w):
+                for min_size in min_sizes:
+                    anchors.append(
+                        (
+                            (x + 0.5) * step / width,
+                            (y + 0.5) * step / height,
+                            min_size / width,
+                            min_size / height,
+                        )
+                    )
+    return np.asarray(anchors, dtype=np.float32)
+
+
+def _sigmoid_scalar(values: np.ndarray) -> np.ndarray:
+    clipped = np.clip(values.astype(np.float64), -80.0, 80.0)
+    return (1.0 / (1.0 + np.exp(-clipped))).astype(np.float32)
+
+
+def _mesh_arcface_landmarks(mesh: np.ndarray, x1: float, y1: float) -> tuple[tuple[int, int], ...]:
+    points = mesh[:, :2].copy()
+    points[:, 0] += x1
+    points[:, 1] += y1
+    left_eye = points[[33, 133]].mean(axis=0)
+    right_eye = points[[263, 362]].mean(axis=0)
+    nose = points[1]
+    left_mouth = points[61]
+    right_mouth = points[291]
+    return tuple(
+        (int(round(x)), int(round(y)))
+        for x, y in (left_eye, right_eye, nose, left_mouth, right_mouth)
+    )
+
+
 class FaceDetector:
-    def __init__(self, session, config: DetectorConfig) -> None:
+    def __init__(self, session, config: DetectorConfig, landmark_session=None) -> None:
         self.session = session
+        self.landmark_session = landmark_session
         self.config = config
         self.input = session.inputs[0]
         self.height, self.width = _input_hw(self.input.shape, (480, 640))
+        if self.config.model_id == "retinaface_yakhyo":
+            self.height, self.width = _input_hw(self.input.shape, (640, 640))
         self.last_max_score = 0.0
 
     def detect(self, frame_rgb: np.ndarray) -> list[Face]:
         if self.config.model_id == "yolov5_face":
             return self._detect_yolov5_face(frame_rgb)
+        if self.config.model_id == "mediapipe_face":
+            return self._detect_mediapipe_face(frame_rgb)
+        if self.config.model_id == "yolox":
+            return self._detect_yolox(frame_rgb)
+        if self.config.model_id == "retinaface_yakhyo":
+            return self._detect_retinaface_yakhyo(frame_rgb)
         return self._detect_face_det_lite(frame_rgb)
 
     def _detect_yolov5_face(self, frame_rgb: np.ndarray) -> list[Face]:
@@ -194,8 +281,10 @@ class FaceDetector:
         by_name = {meta.name.lower(): value for meta, value in zip(self.session.outputs, raw)}
         heatmap = next((v for k, v in by_name.items() if "heat" in k), raw[0])
         bbox = next((v for k, v in by_name.items() if "bbox" in k or "box" in k), raw[1])
+        landmark = next((v for k, v in by_name.items() if "landmark" in k), None)
         heatmap = _nchw(heatmap, 1)
         bbox = _nchw(bbox, 4)
+        landmark = _optional_nchw(landmark, 10)
 
         scores_map = _sigmoid(heatmap[0, 0])
         self.last_max_score = float(np.max(scores_map)) if scores_map.size else 0.0
@@ -218,13 +307,256 @@ class FaceDetector:
             ((xs - distances[:, 0]) * stride_x, (ys - distances[:, 1]) * stride_y,
              (xs + distances[:, 2]) * stride_x, (ys + distances[:, 3]) * stride_y)
         )
+        landmarks = None
+        if landmark is not None:
+            points = landmark[0][:, ys, xs].T
+            centers_x = xs.astype(np.float32)[:, None] * stride_x
+            centers_y = ys.astype(np.float32)[:, None] * stride_y
+            landmarks = np.empty_like(points)
+            landmarks[:, 0::2] = centers_x + points[:, 0::2] * stride_x
+            landmarks[:, 1::2] = centers_y + points[:, 1::2] * stride_y
         boxes[:, [0, 2]] *= original_w / self.width
         boxes[:, [1, 3]] *= original_h / self.height
         boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, original_w - 1)
         boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, original_h - 1)
+        if landmarks is not None:
+            # Qualcomm face_det_lite emits points as left-mouth, left-eye,
+            # right-eye, nose, right-mouth. ArcFace alignment expects
+            # left-eye, right-eye, nose, left-mouth, right-mouth.
+            landmarks = landmarks[:, [2, 3, 4, 5, 6, 7, 0, 1, 8, 9]]
+            landmarks[:, 0::2] *= original_w / self.width
+            landmarks[:, 1::2] *= original_h / self.height
+            landmarks[:, 0::2] = np.clip(landmarks[:, 0::2], 0, original_w - 1)
+            landmarks[:, 1::2] = np.clip(landmarks[:, 1::2], 0, original_h - 1)
+        keep = nms(boxes, scores, self.config.nms_iou_threshold)
         return [
-            Face(tuple(int(x) for x in boxes[index]), float(scores[index]))
+            Face(
+                tuple(int(round(x)) for x in boxes[index]),
+                float(scores[index]),
+                (
+                    tuple(
+                        (int(round(points[offset])), int(round(points[offset + 1])))
+                        for offset in range(0, 10, 2)
+                    )
+                    if landmarks is not None
+                    else None
+                ),
+            )
+            for index, points in (
+                (index, landmarks[index] if landmarks is not None else None)
+                for index in keep
+            )
+        ]
+
+    def _detect_mediapipe_face(self, frame_rgb: np.ndarray) -> list[Face]:
+        original_h, original_w = frame_rgb.shape[:2]
+        image, scale, pad_left, pad_top = _resize_pad_rgb(
+            frame_rgb, self.width, self.height, pad_value=0
+        )
+        tensor = _for_layout(image.astype(np.float32) / 255.0, self.input.shape)
+        raw = self.session.run({self.input.name: tensor})
+        by_name = {meta.name: value for meta, value in zip(self.session.outputs, raw)}
+        coords = np.concatenate(
+            (
+                np.asarray(by_name.get("box_coords_1", raw[0]), dtype=np.float32),
+                np.asarray(by_name.get("box_coords_2", raw[1]), dtype=np.float32),
+            ),
+            axis=1,
+        )
+        scores = np.concatenate(
+            (
+                np.asarray(by_name.get("box_scores_1", raw[2]), dtype=np.float32),
+                np.asarray(by_name.get("box_scores_2", raw[3]), dtype=np.float32),
+            ),
+            axis=1,
+        ).reshape(-1)
+        scores = _sigmoid_scalar(scores)
+        coords = coords.reshape(-1, 8, 2)
+        anchors = MEDIAPIPE_FACE_ANCHORS
+        offset = anchors[:, 0:1, :] * np.asarray([self.width, self.height], dtype=np.float32)
+        decoded = coords * anchors[:, 1:2, :] + offset * (
+            np.arange(coords.shape[1])[:, None] != 1
+        )
+        flat = decoded.reshape(decoded.shape[0], -1)
+        boxes = np.column_stack(
+            (
+                flat[:, 0] - flat[:, 2] / 2,
+                flat[:, 1] - flat[:, 3] / 2,
+                flat[:, 0] + flat[:, 2] / 2,
+                flat[:, 1] + flat[:, 3] / 2,
+            )
+        )
+        keypoints = flat[:, 4:].reshape(-1, 6, 2)
+        self.last_max_score = float(np.max(scores)) if scores.size else 0.0
+        selected = scores >= self.config.score_threshold
+        if not np.any(selected):
+            return []
+        boxes = boxes[selected]
+        keypoints = keypoints[selected]
+        scores = scores[selected]
+        keep = nms(boxes, scores, self.config.nms_iou_threshold)[:4]
+        faces: list[Face] = []
+        for index in keep:
+            box = boxes[index].copy()
+            points = keypoints[index].copy()
+            box[[0, 2]] = (box[[0, 2]] - pad_left) / scale
+            box[[1, 3]] = (box[[1, 3]] - pad_top) / scale
+            points[:, 0] = (points[:, 0] - pad_left) / scale
+            points[:, 1] = (points[:, 1] - pad_top) / scale
+            box[[0, 2]] = np.clip(box[[0, 2]], 0, original_w - 1)
+            box[[1, 3]] = np.clip(box[[1, 3]], 0, original_h - 1)
+            points[:, 0] = np.clip(points[:, 0], 0, original_w - 1)
+            points[:, 1] = np.clip(points[:, 1], 0, original_h - 1)
+            x1, y1, x2, y2 = box
+            landmarks = (
+                (points[0] + points[1]) / 2,
+                (points[2] + points[3]) / 2,
+                points[4],
+                points[5],
+                points[5],
+            )
+            if self.landmark_session is not None and x2 > x1 and y2 > y1:
+                refined = self._mediapipe_mesh_landmarks(frame_rgb, box)
+                if refined is not None:
+                    landmarks = refined
+            faces.append(
+                Face(
+                    tuple(int(round(value)) for value in box),
+                    float(scores[index]),
+                    tuple((int(round(x)), int(round(y))) for x, y in landmarks),
+                )
+            )
+        return faces
+
+    def _mediapipe_mesh_landmarks(
+        self, frame_rgb: np.ndarray, box: np.ndarray
+    ) -> tuple[tuple[int, int], ...] | None:
+        if self.landmark_session is None:
+            return None
+        x1, y1, x2, y2 = box
+        w, h = x2 - x1, y2 - y1
+        side = max(w, h) * 1.35
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        crop_x1 = int(max(0, round(cx - side / 2)))
+        crop_y1 = int(max(0, round(cy - side / 2)))
+        crop_x2 = int(min(frame_rgb.shape[1], round(cx + side / 2)))
+        crop_y2 = int(min(frame_rgb.shape[0], round(cy + side / 2)))
+        crop = frame_rgb[crop_y1:crop_y2, crop_x1:crop_x2]
+        if crop.size == 0:
+            return None
+        landmark_input = self.landmark_session.inputs[0]
+        lh, lw = _input_hw(landmark_input.shape, (192, 192))
+        resized = resize_image(crop, lw, lh).astype(np.float32) / 255.0
+        raw = self.landmark_session.run(
+            {landmark_input.name: _for_layout(resized, landmark_input.shape)}
+        )
+        by_name = {meta.name: value for meta, value in zip(self.landmark_session.outputs, raw)}
+        score = float(np.asarray(by_name.get("scores", raw[0]), dtype=np.float32).reshape(-1)[0])
+        if score < 0.5:
+            return None
+        mesh = np.asarray(by_name.get("landmarks", raw[1]), dtype=np.float32).reshape(468, 3)
+        mesh[:, 0] *= (crop_x2 - crop_x1)
+        mesh[:, 1] *= (crop_y2 - crop_y1)
+        return _mesh_arcface_landmarks(mesh, crop_x1, crop_y1)
+
+    def _detect_yolox(self, frame_rgb: np.ndarray) -> list[Face]:
+        original_h, original_w = frame_rgb.shape[:2]
+        image, scale, pad_left, pad_top = _resize_pad_rgb(
+            frame_rgb, self.width, self.height, pad_value=0
+        )
+        tensor = _for_layout(image.astype(np.float32) / 255.0, self.input.shape)
+        raw = self.session.run({self.input.name: tensor})
+        by_name = {meta.name: value for meta, value in zip(self.session.outputs, raw)}
+        boxes = np.asarray(by_name.get("boxes", raw[0]), dtype=np.float32).reshape(-1, 4)
+        scores = np.asarray(by_name.get("scores", raw[1]), dtype=np.float32).reshape(-1)
+        classes = np.asarray(by_name.get("class_idx", raw[2])).reshape(-1)
+        person = classes == 0
+        self.last_max_score = float(np.max(scores[person])) if np.any(person) else 0.0
+        selected = person & (scores >= self.config.score_threshold)
+        if not np.any(selected):
+            return []
+        boxes = boxes[selected]
+        scores = scores[selected]
+        boxes[:, [0, 2]] = (boxes[:, [0, 2]] - pad_left) / scale
+        boxes[:, [1, 3]] = (boxes[:, [1, 3]] - pad_top) / scale
+        boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, original_w - 1)
+        boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, original_h - 1)
+        return [
+            Face(tuple(int(round(value)) for value in boxes[index]), float(scores[index]))
             for index in nms(boxes, scores, self.config.nms_iou_threshold)
+        ]
+
+    def _detect_retinaface_yakhyo(self, frame_rgb: np.ndarray) -> list[Face]:
+        original_h, original_w = frame_rgb.shape[:2]
+        image_rgb, scale, pad_left, pad_top = _resize_pad_rgb(
+            frame_rgb, self.width, self.height, pad_value=0
+        )
+        image_bgr = image_rgb[..., ::-1].astype(np.float32)
+        image_bgr -= np.asarray((104.0, 117.0, 123.0), dtype=np.float32)
+        tensor = _for_layout(image_bgr, self.input.shape)
+        raw = self.session.run({self.input.name: tensor})
+        outputs = [np.asarray(value, dtype=np.float32) for value in raw]
+        loc_output = next((value for value in outputs if value.shape[-1] == 4), None)
+        conf_output = next((value for value in outputs if value.shape[-1] == 2), None)
+        landmark_output = next((value for value in outputs if value.shape[-1] == 10), None)
+        if loc_output is None or conf_output is None or landmark_output is None:
+            raise ValueError(f"Unexpected RetinaFace outputs: {[value.shape for value in outputs]}")
+        loc = loc_output.reshape(-1, 4)
+        conf = conf_output.reshape(-1, 2)
+        landmarks = landmark_output.reshape(-1, 10)
+        scores = conf[:, 1]
+        priors = _retinaface_priors(self.width, self.height)
+        if loc.shape[0] != priors.shape[0]:
+            raise ValueError(
+                f"RetinaFace priors/output mismatch: priors={priors.shape}, loc={loc.shape}"
+            )
+        boxes = np.empty_like(loc)
+        boxes[:, :2] = priors[:, :2] + loc[:, :2] * 0.1 * priors[:, 2:]
+        boxes[:, 2:] = priors[:, 2:] * np.exp(loc[:, 2:] * 0.2)
+        boxes[:, :2] -= boxes[:, 2:] / 2
+        boxes[:, 2:] += boxes[:, :2]
+        boxes *= np.asarray([self.width, self.height, self.width, self.height], dtype=np.float32)
+
+        points = priors[:, None, :2] + landmarks.reshape(-1, 5, 2) * 0.1 * priors[:, None, 2:]
+        points *= np.asarray([self.width, self.height], dtype=np.float32)
+        points = points.reshape(-1, 10)
+
+        self.last_max_score = float(np.max(scores)) if scores.size else 0.0
+        selected = scores >= self.config.score_threshold
+        if not np.any(selected):
+            return []
+        boxes = boxes[selected]
+        points = points[selected]
+        scores = scores[selected]
+        if len(scores) > 1000:
+            top = np.argpartition(scores, -1000)[-1000:]
+            boxes, points, scores = boxes[top], points[top], scores[top]
+        order = np.argsort(scores)[::-1]
+        boxes, points, scores = boxes[order], points[order], scores[order]
+        keep = nms(boxes, scores, self.config.nms_iou_threshold)[:10]
+        boxes = boxes[keep]
+        points = points[keep]
+        scores = scores[keep]
+
+        boxes[:, [0, 2]] = (boxes[:, [0, 2]] - pad_left) / scale
+        boxes[:, [1, 3]] = (boxes[:, [1, 3]] - pad_top) / scale
+        points[:, 0::2] = (points[:, 0::2] - pad_left) / scale
+        points[:, 1::2] = (points[:, 1::2] - pad_top) / scale
+        boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, original_w - 1)
+        boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, original_h - 1)
+        points[:, 0::2] = np.clip(points[:, 0::2], 0, original_w - 1)
+        points[:, 1::2] = np.clip(points[:, 1::2], 0, original_h - 1)
+
+        return [
+            Face(
+                tuple(int(round(value)) for value in box),
+                float(score),
+                tuple(
+                    (int(round(face_points[index])), int(round(face_points[index + 1])))
+                    for index in range(0, 10, 2)
+                ),
+            )
+            for box, score, face_points in zip(boxes, scores, points)
         ]
 
 

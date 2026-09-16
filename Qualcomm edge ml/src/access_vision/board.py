@@ -246,9 +246,9 @@ class NtfyBoardSender:
         return f"published to {self.url}"
 
 
-def build_ntfy_notifier(topic: str, **kwargs) -> BoardNotifier:
+def build_ntfy_notifier(topic: str, base_url: str = "https://ntfy.sh", **kwargs) -> BoardNotifier:
     """Notifier that relays through ntfy.sh instead of reaching the board directly."""
-    return BoardNotifier(sender=NtfyBoardSender(topic), **kwargs)
+    return BoardNotifier(sender=NtfyBoardSender(topic, base_url=base_url), **kwargs)
 
 
 def build_notifier(scripts_dir: str | None = None, **kwargs) -> BoardNotifier | None:

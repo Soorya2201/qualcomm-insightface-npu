@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,6 +13,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 import numpy as np
 
 from .board import build_http_notifier, build_notifier, build_ntfy_notifier
+from .config import load_config
 from .matching import AllowList
 from .pipeline import FrameProcessor
 from .runtime import QnnSession
@@ -212,7 +214,87 @@ document.querySelector('#run').onclick=async()=>{{const files=[...document.query
 }};</script></body></html>"""
 
 
-def run_server(config, enrollment_only: bool) -> None:
+def _build_notifier(config, processor) -> object | None:
+    if processor is None or not config.board.enabled:
+        return None
+    if config.board.transport == "ntfy":
+        if not config.board.ntfy_topic:
+            raise RuntimeError("board.transport is ntfy but board.ntfy_topic is empty")
+        return build_ntfy_notifier(
+            config.board.ntfy_topic,
+            base_url=config.board.ntfy_base_url,
+            heartbeat_seconds=config.board.heartbeat_seconds,
+            min_interval_seconds=config.board.min_interval_seconds,
+        )
+    if config.board.transport == "http":
+        return build_http_notifier(
+            config.board.url,
+            config.board.token,
+            heartbeat_seconds=config.board.heartbeat_seconds,
+            min_interval_seconds=config.board.min_interval_seconds,
+        )
+    return build_notifier(
+        scripts_dir=str(config.board.scripts_dir) if config.board.scripts_dir else None,
+        heartbeat_seconds=config.board.heartbeat_seconds,
+        min_interval_seconds=config.board.min_interval_seconds,
+    )
+
+
+def _build_live_runtime(config) -> dict:
+    LOGGER.info(
+        "Loading live runtime detector=%s embedder=%s embedding_dimension=%d alignment=%s threshold=%.3f",
+        config.detector.model_id,
+        config.embedder.model_id,
+        config.embedder.embedding_dimension,
+        config.embedder.align_landmarks,
+        config.database.cosine_threshold,
+    )
+    LOGGER.info("Detector path: %s", config.detector.path)
+    if config.detector.landmark_path is not None:
+        LOGGER.info("Detector landmark path: %s", config.detector.landmark_path)
+    LOGGER.info("Embedder path: %s", config.embedder.path)
+    landmark_session = (
+        QnnSession(config.detector.landmark_path, config.runtime)
+        if config.detector.landmark_path is not None
+        else None
+    )
+    detector = FaceDetector(
+        QnnSession(config.detector.path, config.runtime),
+        config.detector,
+        landmark_session,
+    )
+    embedder = FaceEmbedder(
+        QnnSession(config.embedder.path, config.runtime), config.embedder
+    )
+    allow_list = AllowList.load(
+        config.database.embeddings_path,
+        config.database.cosine_threshold,
+        config.embedder.embedding_dimension,
+    )
+    LOGGER.info(
+        "Loaded embeddings path=%s identities=%d templates=%d dimension=%d",
+        config.database.embeddings_path,
+        len(set(allow_list.names)),
+        len(allow_list.names),
+        allow_list.embeddings.shape[1],
+    )
+    processor = FrameProcessor(config, detector, embedder, allow_list)
+    notifier = _build_notifier(config, processor)
+    LOGGER.info("Board output %s", "enabled" if notifier else "unavailable/disabled")
+    return {
+        "config": config,
+        "processor": processor,
+        "notifier": notifier,
+        "page": _live_html(config),
+        "cameras_by_id": {camera.id: camera for camera in config.cameras},
+    }
+
+
+def run_server(
+    config,
+    enrollment_only: bool,
+    config_path: str | Path | None = None,
+) -> None:
     if config.web.host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("The raw-camera server must bind to localhost only")
     LOGGER.info(
@@ -224,71 +306,88 @@ def run_server(config, enrollment_only: bool) -> None:
         config.embedder.align_landmarks,
         config.database.cosine_threshold,
     )
-    LOGGER.info("Detector path: %s", config.detector.path)
-    LOGGER.info("Embedder path: %s", config.embedder.path)
-    detector = FaceDetector(QnnSession(config.detector.path, config.runtime), config.detector)
-    embedder = FaceEmbedder(
-        QnnSession(config.embedder.path, config.runtime), config.embedder
-    )
     lock = threading.Lock()
-    enrollment = EnrollmentManager(config, detector, embedder) if enrollment_only else None
-    allow_list = None if enrollment_only else AllowList.load(
-            config.database.embeddings_path,
-            config.database.cosine_threshold,
-            config.embedder.embedding_dimension,
+    stop_reload = threading.Event()
+    enrollment = None
+    if enrollment_only:
+        LOGGER.info("Detector path: %s", config.detector.path)
+        if config.detector.landmark_path is not None:
+            LOGGER.info("Detector landmark path: %s", config.detector.landmark_path)
+        LOGGER.info("Embedder path: %s", config.embedder.path)
+        landmark_session = (
+            QnnSession(config.detector.landmark_path, config.runtime)
+            if config.detector.landmark_path is not None
+            else None
         )
-    if allow_list is not None:
-        LOGGER.info(
-            "Loaded existing embeddings; no generation at startup path=%s identities=%d templates=%d dimension=%d",
-            config.database.embeddings_path,
-            len(set(allow_list.names)),
-            len(allow_list.names),
-            allow_list.embeddings.shape[1],
+        detector = FaceDetector(
+            QnnSession(config.detector.path, config.runtime),
+            config.detector,
+            landmark_session,
         )
-    else:
+        embedder = FaceEmbedder(
+            QnnSession(config.embedder.path, config.runtime), config.embedder
+        )
+        enrollment = EnrollmentManager(config, detector, embedder)
+        state = {
+            "config": config,
+            "processor": None,
+            "notifier": None,
+            "page": _enroll_html(config),
+            "cameras_by_id": {camera.id: camera for camera in config.cameras},
+        }
         LOGGER.info(
             "Enrollment output path=%s; existing database is replaced only after a successful commit",
             config.database.embeddings_path,
         )
-    processor = None if enrollment_only else FrameProcessor(
-        config, detector, embedder, allow_list
-    )
-    # The status light is driven from every process() result, not from the alert
-    # sink: sink.emit() fires only on UNAUTHORIZED and only past the cooldown, so
-    # a board wired to it could never show green or clear when people leave.
-    notifier = None
-    if processor is not None and config.board.enabled:
-        if config.board.transport == "ntfy":
-            # Both sides only ever make OUTBOUND https connections to ntfy.sh;
-            # neither reaches the other directly, so venue Wi-Fi that blocks
-            # device-to-device traffic (client isolation) does not matter.
-            if not config.board.ntfy_topic:
-                raise RuntimeError("board.transport is ntfy but board.ntfy_topic is empty")
-            notifier = build_ntfy_notifier(
-                config.board.ntfy_topic,
-                base_url=config.board.ntfy_base_url,
-                heartbeat_seconds=config.board.heartbeat_seconds,
-                min_interval_seconds=config.board.min_interval_seconds,
+    else:
+        state = _build_live_runtime(config)
+
+    def reload_loop(path: Path) -> None:
+        try:
+            last_stamp = path.stat().st_mtime_ns
+        except OSError:
+            last_stamp = 0
+        while not stop_reload.wait(1.0):
+            try:
+                stamp = path.stat().st_mtime_ns
+            except OSError as exc:
+                LOGGER.warning("Config hot reload skipped; cannot stat %s: %s", path, exc)
+                continue
+            if stamp == last_stamp:
+                continue
+            try:
+                new_config = load_config(path)
+                if new_config.web != state["config"].web:
+                    LOGGER.warning(
+                        "Config hot reload ignores [web] changes; restart required for host/port/frame size"
+                    )
+                new_state = _build_live_runtime(new_config)
+            except Exception as exc:  # noqa: BLE001 - keep the known-good runtime alive
+                LOGGER.exception("Config hot reload failed; keeping previous runtime: %s", exc)
+                last_stamp = stamp
+                continue
+            old_notifier = state.get("notifier")
+            with lock:
+                state.update(new_state)
+            if old_notifier is not None:
+                old_notifier.close()
+            last_stamp = stamp
+            LOGGER.info(
+                "Hot reloaded config detector=%s path=%s",
+                new_config.detector.model_id,
+                new_config.detector.path,
             )
-        elif config.board.transport == "http":
-            # The board runs verdict_server.py and drives its own lights.
-            notifier = build_http_notifier(
-                config.board.url,
-                config.board.token,
-                heartbeat_seconds=config.board.heartbeat_seconds,
-                min_interval_seconds=config.board.min_interval_seconds,
-            )
-        else:
-            notifier = build_notifier(
-                scripts_dir=str(config.board.scripts_dir) if config.board.scripts_dir else None,
-                heartbeat_seconds=config.board.heartbeat_seconds,
-                min_interval_seconds=config.board.min_interval_seconds,
-            )
-        LOGGER.info(
-            "Board output %s", "enabled" if notifier else "unavailable (send_to_board not importable)"
-        )
-    page = _enroll_html(config) if enrollment_only else _live_html(config)
-    cameras_by_id = {camera.id: camera for camera in config.cameras}
+
+    if config_path is not None and not enrollment_only:
+        reload_path = Path(config_path).resolve()
+        threading.Thread(
+            target=reload_loop,
+            args=(reload_path,),
+            name="config-hot-reload",
+            daemon=True,
+        ).start()
+        LOGGER.info("Config hot reload enabled path=%s interval=1.0s", reload_path)
+
     # Camera endpoints are LAN addresses. Do not send them through machine-wide
     # HTTP proxies, which commonly cannot route private IP addresses.
     camera_opener = build_opener(ProxyHandler({}))
@@ -311,7 +410,8 @@ def run_server(config, enrollment_only: bool) -> None:
             if parsed.path == "/api/camera-stream" and not enrollment_only:
                 query = parse_qs(parsed.query)
                 camera_id = query.get("camera", [""])[0]
-                camera = cameras_by_id.get(camera_id)
+                with lock:
+                    camera = state["cameras_by_id"].get(camera_id)
                 if camera is None or camera.source != "mjpeg" or not camera.url:
                     self._json({"error": "Unknown MJPEG camera"}, 404)
                     return
@@ -354,7 +454,8 @@ def run_server(config, enrollment_only: bool) -> None:
                         except (BrokenPipeError, ConnectionResetError):
                             pass
                 return
-            payload = page.encode("utf-8")
+            with lock:
+                payload = state["page"].encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
@@ -371,11 +472,13 @@ def run_server(config, enrollment_only: bool) -> None:
                     raise ValueError("Frame is too large")
                 body = self.rfile.read(length)
                 with lock:
+                    processor = state["processor"]
+                    notifier = state["notifier"]
                     if parsed.path == "/api/frame" and processor is not None:
                         frame = _decode_rgba(body, int(query["width"][0]), int(query["height"][0]))
                         result = processor.process(query["camera"][0], frame)
                         if notifier is not None:
-                            notifier.update(result)  # non-blocking; worker owns the ssh call
+                            notifier.update(result)
                         self._json(result)
                     elif parsed.path == "/api/enroll/reset" and enrollment is not None:
                         self._json(enrollment.reset())
@@ -404,4 +507,8 @@ def run_server(config, enrollment_only: bool) -> None:
     except KeyboardInterrupt:
         LOGGER.info("Stopping")
     finally:
+        stop_reload.set()
+        notifier = state.get("notifier")
+        if notifier is not None:
+            notifier.close()
         server.server_close()
