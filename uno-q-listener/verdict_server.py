@@ -89,6 +89,16 @@ def apply_payload(raw):
     }
 
 
+def _ids(raw):
+    """' [alice:authorized, unknown:unauthorized]' for the log line, or ''."""
+    try:
+        people = json.loads(raw.decode("utf-8")).get("people") or []
+        parts = ["%s:%s" % (p.get("id", "?"), p.get("status", "?")) for p in people if isinstance(p, dict)]
+    except (ValueError, AttributeError, UnicodeDecodeError):
+        return ""
+    return " [%s]" % ", ".join(parts) if parts else ""
+
+
 def _watchdog():
     """Blank the lights when the sender goes quiet."""
     cleared = True
@@ -101,6 +111,7 @@ def _watchdog():
             try:
                 show([])  # empty -> every LED off
                 _last_summary[0] = "stale: sender silent, lights cleared"
+                print("STALE - no verdict for %.0fs, lights cleared" % STALE_SECONDS, file=sys.stderr)
                 cleared = True
             except Exception as exc:  # noqa: BLE001
                 print("watchdog could not clear lights: %s" % exc, file=sys.stderr)
@@ -162,7 +173,26 @@ class Handler(BaseHTTPRequestHandler):
             print("verdict failed: %s" % exc, file=sys.stderr)
             self._json({"ok": False, "error": str(exc)}, 500)
             return
+        # The decision itself, in the same form ntfy_poller.py logs, so the
+        # journal says what the lights now show -- not just "POST 200".
+        if not result["people"]:
+            tag = "EMPTY"
+        elif result["authorized"]:
+            tag = "AUTHORIZED"
+        else:
+            tag = "UNAUTHORIZED"
+        print("%s - %s%s (from %s)" % (tag, result["summary"], _ids(raw), self.address_string()),
+              file=sys.stderr)
         self._json(result)
+
+    def log_request(self, code="-", size="-"):
+        # A successful verdict already produced the decision line above, and
+        # health checks are routine; logging them too would bury the verdicts.
+        # Refusals and errors (401, 400, 404, 500) are always logged.
+        path = self.path.split("?")[0]
+        if str(code) == "200" and path in ("/verdict", "/health"):
+            return
+        super().log_request(code, size)
 
     def log_message(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
