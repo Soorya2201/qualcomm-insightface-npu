@@ -63,15 +63,17 @@ def test_no_face_clears_the_board():
     assert sent[-1] == (), "an empty frame must push an empty people list"
 
 
-def test_repeated_state_is_not_resent():
+def test_repeated_state_is_resent_at_the_board_interval():
     sent = []
-    notifier = BoardNotifier(lambda p: sent.append(state_key(p)), heartbeat_seconds=999, min_interval_seconds=0.0)
-    for _ in range(10):
+    notifier = BoardNotifier(lambda p: sent.append(state_key(p)), heartbeat_seconds=999, min_interval_seconds=0.05)
+    started = time.monotonic()
+    while time.monotonic() - started < 0.22:
         notifier.update(_result([("alice", True, (0, 0, 10, 10))]))
-        time.sleep(0.02)
-    time.sleep(0.2)
+        time.sleep(0.01)
+    time.sleep(0.15)
     notifier.close()
-    assert len(sent) == 1, f"one state should cost one send, got {len(sent)}"
+    assert len(sent) >= 3, f"same live state should be resent at the board interval, got {len(sent)}"
+    assert all(item == (("alice", "authorized"),) for item in sent)
 
 
 def test_slow_board_never_blocks_and_converges():

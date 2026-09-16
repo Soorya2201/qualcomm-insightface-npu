@@ -61,11 +61,7 @@ def to_board_payload(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def state_key(payload: dict[str, Any]) -> tuple:
-    """What counts as a change worth spending an ssh round-trip on.
-
-    Identity and verdict only -- not the box, or every pixel of movement would
-    look like a new state and we would send continuously.
-    """
+    """Compact identity/verdict key used by tests and logs."""
     return tuple((p["id"], p["status"]) for p in payload["people"])
 
 
@@ -94,12 +90,10 @@ class BoardNotifier:
         self._min_interval = min_interval_seconds
 
         self._pending: dict | None = None
-        self._pending_key: tuple | None = None
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
 
-        self._last_key: tuple | None = None
         self._last_sent = 0.0
         self._failing = False
         self._last_failure_logged = 0.0
@@ -113,18 +107,9 @@ class BoardNotifier:
             payload = {"people": []}
         else:
             payload = to_board_payload(result)
-        key = state_key(payload)
-
-        now = time.monotonic()
-        changed = key != self._last_key
-        stale = now - self._last_sent >= self._heartbeat
-        if not changed and not stale:
-            return
-
         with self._lock:
             # Single slot: a newer state replaces an unsent older one.
             self._pending = payload
-            self._pending_key = key
         self._wake.set()
 
     def _run(self) -> None:
@@ -132,19 +117,14 @@ class BoardNotifier:
             self._wake.wait(timeout=1.0)
             self._wake.clear()
             with self._lock:
-                payload, key = self._pending, self._pending_key
-                self._pending = self._pending_key = None
+                payload = self._pending
+                self._pending = None
             if payload is None:
                 continue
 
-            # The slot may still hold a state that finished sending while it sat
-            # here (update() compares against _last_key, which only advances once
-            # a send completes). Drop it unless the heartbeat is actually due.
-            if key == self._last_key and time.monotonic() - self._last_sent < self._heartbeat:
-                continue
-
-            # Rate limit even genuine changes; the light cannot usefully show
-            # more than a couple of transitions per second.
+            # Send the latest state at a predictable cadence. Repeated identical
+            # states are intentional: the board listener is a live state display,
+            # and the operator should see proof that the relay is still flowing.
             since = time.monotonic() - self._last_sent
             if since < self._min_interval:
                 time.sleep(self._min_interval - since)
@@ -170,7 +150,6 @@ class BoardNotifier:
             if self._failing:
                 LOGGER.info("Board reachable again")
                 self._failing = False
-            self._last_key = key
             self._last_sent = time.monotonic()
             # INFO, not DEBUG: this is the one line that proves a verdict this
             # device computed actually reached the board. At the default log
