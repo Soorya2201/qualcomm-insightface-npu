@@ -2,13 +2,15 @@
 __pycache__/
 *.pyc
 
-# Upstream InsightFace downloads - reproducible via scripts, 275MB+
+# Upstream InsightFace downloads - reproducible via scripts/01, 275MB+
 models/onnx/
-# Derived artifacts - regenerate with scripts/01 and scripts/02
+# Derived intermediates - regenerate with scripts/01 and scripts/02
 models/prepared/
-# Compiled QNN artifacts are SoC-specific; regenerate with scripts/03
-models/compiled/
-# Calibration faces are usually private data - never commit them
+# Raw AI Hub job output; the repackaged folder below is what ships
+models/compiled/*
+!models/compiled/w600k_r50_qnn_x_elite/
+# Calibration faces are private data - never commit them
 calib/*
 !calib/.gitkeep
 embeddings.npz
+.DS_Store

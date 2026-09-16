@@ -158,3 +158,44 @@ easily missed deployment failure. Verified working end-to-end on CPU locally
 - SCRFD's detector head includes NMS-adjacent post-processing that often does not
   quantize or partition well. If `det_10g` profiles badly, cut the graph before
   the post-processing and do that part on CPU.
+
+## Compiled artifact (included in this repo)
+
+    models/compiled/w600k_r50_qnn_x_elite/
+    ├── w600k_r50_qnn.onnx    333 B   EPContext wrapper — load THIS in ONNX Runtime
+    └── model.bin              42 MB  compiled Hexagon context binary
+
+Both files must stay in the same directory and `model.bin` must keep its name —
+the wrapper references it by relative path.
+
+| | |
+|---|---|
+| Source | InsightFace `buffalo_l` / `w600k_r50` (ArcFace ResNet50) |
+| Target | Snapdragon X Elite (Hexagon NPU) |
+| Precision | INT8 weights / INT16 activations |
+| Input | `input.1`, `1x3x112x112`, BGR, `(x - 127.5) / 127.5` |
+| Output | 512-d embedding (L2-normalize before cosine compare) |
+| Inference | 1.71 ms (~585 FPS) |
+| NPU coverage | 188 / 188 layers, no CPU fallback |
+| Peak memory | 45 MB |
+| Accuracy vs fp32 | cosine 0.998493 |
+| Size | 166 MB → 42 MB |
+
+AI Hub jobs: [quantize jp2r9886g](https://workbench.aihub.qualcomm.com/jobs/jp2r9886g/) ·
+[compile jpyojee05](https://workbench.aihub.qualcomm.com/jobs/jpyojee05/) ·
+[profile j568z6jng](https://workbench.aihub.qualcomm.com/jobs/j568z6jng/) ·
+[inference j5wl3ovzp](https://workbench.aihub.qualcomm.com/jobs/j5wl3ovzp/)
+
+### Accuracy caveat — read before production use
+
+The included binary was calibrated on **synthetic noise**, not real faces. The
+0.9985 cosine confirms the quantization is numerically sound on one random
+input; it does **not** establish face-verification accuracy. Before relying on
+this, put ~200 aligned crops in `calib/`, rerun steps 2-3, and re-measure on
+real face pairs.
+
+## License
+
+Pipeline code here is MIT. The InsightFace models it derives from are released
+by deepinsight for **non-commercial research use** — that license governs the
+compiled artifact too. See https://github.com/deepinsight/insightface .
